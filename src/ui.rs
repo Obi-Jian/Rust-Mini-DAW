@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU32, Ordering}};
 use egui_file_dialog::FileDialog;
 use crate::audio::{AudioEngine, WavData};
 use eframe::egui;
@@ -13,6 +13,8 @@ pub struct MyDawApp {
     track_muted: Vec<Arc<AtomicBool>>,
     file_dialog: FileDialog,
     track_files: Vec<PathBuf>,
+    track_volumes: Vec<f32>,
+    track_volume_atomics: Vec<Arc<AtomicU32>>,
 }
 
 impl MyDawApp {
@@ -23,6 +25,8 @@ impl MyDawApp {
             is_playing: false,
             is_paused: false,
             track_muted: Vec::new(),
+            track_volumes: Vec::new(),
+            track_volume_atomics: Vec::new(),
             file_dialog: FileDialog::new(),
             track_files: Vec::new(),
         }
@@ -76,15 +80,25 @@ impl eframe::App for MyDawApp {
                     // clona per passarli allo stream (la UI tiene gli originali)
                     let muted_for_stream: Vec<Arc<AtomicBool>> = muted.iter().map(|m| Arc::clone(m)).collect();
 
+
+                    // UI: salva il valore
+                    let volume: Vec<Arc<AtomicU32>> = (0..data.len())
+                        .map(|_| Arc::new(AtomicU32::new(1.0f32.to_bits())))
+                        .collect();
+
+                    let volume_for_stream: Vec<Arc<AtomicU32>> = volume.iter().map(|v| Arc::clone(v)).collect();
                     
                     // Creiamo lo stream usando la logica che hai già scritto
-                    if let Ok(s) = self.engine.setup_stream(data, muted_for_stream) {
+
+                    if let Ok(s) = self.engine.setup_stream(data, muted_for_stream, volume_for_stream) {
                         use cpal::traits::StreamTrait;
                         s.play().unwrap();
                         self.stream = Some(s); // Salviamo lo stream per non farlo morire
                         self.track_muted = muted;  // la UI tiene i suoi Arc
                         self.is_playing = true;
                         self.is_paused = false;
+                        self.track_volume_atomics = volume;
+                        self.track_volumes = vec![1.0f32; self.track_files.len()];
                         ctx.request_repaint();  // ← forza un nuovo frame, non so cosa cambia ma funziona anche senza
                     } else {println!("Errore nel caricamento dello stream")}
                 } else if self.is_playing && !self.is_paused {
@@ -124,6 +138,16 @@ impl eframe::App for MyDawApp {
                 }
             }
 
+            for (i, _track) in self.track_files.iter().enumerate() {
+                // Nel loop delle tracce in update():
+                if i >= self.track_volumes.len() { continue; } // guard
+                let mut v = self.track_volumes[i];
+                if ui.add(egui::Slider::new(&mut v, 0.0..=1.0).text("Volume")).changed() {
+                    self.track_volumes[i] = v;
+                    self.track_volume_atomics[i].store(v.to_bits(), Ordering::Relaxed);
+                }
+            }
+
             if let Some(i) = to_remove {
                 self.track_files.remove(i);
             }
@@ -149,7 +173,7 @@ impl eframe::App for MyDawApp {
         true
     }
     
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
+    // fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw_input: &mut egui::RawInput) {}
     
     /* fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         egui::CentralPanel::default().show(ui, |ui| {

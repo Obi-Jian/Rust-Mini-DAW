@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Sample, SampleFormat, FromSample};
@@ -51,7 +51,8 @@ impl AudioEngine {
     pub fn setup_stream(
         &self,
         samples: Vec<WavData>,
-        muted: Vec<Arc<AtomicBool>>,   // ← aggiunto
+        muted: Vec<Arc<AtomicBool>>,
+        volume: Vec<Arc<AtomicU32>>,
 
 
     ) -> Result<cpal::Stream, cpal::BuildStreamError> {
@@ -59,9 +60,9 @@ impl AudioEngine {
         let config = self.config.clone();
 
         match self.sample_format {
-            SampleFormat::F32 => self.create_stream::<f32>(&config,samples, muted, err_fn),
-            SampleFormat::I16 => self.create_stream::<i16>(&config, samples, muted,/* samples_a, samples_b, */ err_fn),
-            SampleFormat::U16 => self.create_stream::<u16>(&config, samples, muted,/* samples_a, samples_b, */ err_fn),
+            SampleFormat::F32 => self.create_stream::<f32>(&config,samples, muted, volume, err_fn),
+            SampleFormat::I16 => self.create_stream::<i16>(&config, samples, muted,/* samples_a, samples_b, */ volume, err_fn),
+            SampleFormat::U16 => self.create_stream::<u16>(&config, samples, muted,/* samples_a, samples_b, */volume , err_fn),
             _ => panic!("Formato non supportato"),
         }
     }
@@ -72,6 +73,7 @@ impl AudioEngine {
         config: &cpal::StreamConfig,
         data: Vec<WavData>,
         muted: Vec<Arc<AtomicBool>>,
+        volume: Vec<Arc<AtomicU32>>,
         err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
@@ -112,36 +114,23 @@ impl AudioEngine {
                         
                         /* let chan: Vec<usize> = channels.iter()
                             .map(|d| ch % d )
-                            .collect(); */
-
+                            .collect(); */ // abbiamo implementato l'iter dei canali direttamente in val
 
                         // .zip() prende due iteratori e li "accoppia" elemento per elemento, producendo tuple
                         // [1, 2, 3].iter().zip([10, 20, 30].iter()) produce: (&1, &10), (&2, &20), (&3, &30)
-                        /* let val: Vec<f32> = data.iter()
-                            .zip(muted.iter())
-                            .zip(chan.iter()) // produce: (d, ch)
-                            .zip(pos.iter()) // produce: ((d, ch), p)
-                            //.map(|((d, &c), &p)| get_interpolated(&d.samples, p + c as f64))
-                            .map(|(((d, m), &num_ch), &p)| {
-                                if m.load(Ordering::Relaxed) {
-                                    0.0
-                                } else {
-                                    let c: usize = ch % num_ch;
-                                    get_interpolated(&d.samples, p + c as f64)
-                                }
-                            })
-                            .collect(); */
-
                         let val: Vec<f32> = data.iter()
-                        .zip(muted.iter())
-                        .zip(channels.iter())
-                        .zip(pos.iter())
-                        .map(|(((d, m), &num_ch), &p)| {
+                        .zip(muted.iter()) // produce: (d, m)
+                        .zip(channels.iter()) // produce: ((d, m), num_ch)
+                        .zip(pos.iter()) // produe: (((d, m), num_ch), p)
+                        .zip(volume.iter())
+                        .map(|((((d, m), &num_ch), &p), vol)| {
                             if m.load(Ordering::Relaxed) {
                                 0.0
                             } else {
                                 let c = ch % num_ch;  // num_ch è già usize grazie a &num_ch
-                                get_interpolated(&d.samples, p + c as f64)
+                                let sample = get_interpolated(&d.samples, p + c as f64);
+                                let v = f32::from_bits(vol.load(Ordering::Relaxed)); // ← moltiplica qui
+                                sample * v
                             }
                         })
                         .collect();
