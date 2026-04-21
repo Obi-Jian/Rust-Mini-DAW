@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{Sample, SampleFormat, FromSample};
@@ -53,15 +53,16 @@ impl AudioEngine {
         samples: Vec<WavData>,
         muted: Vec<Arc<AtomicBool>>,
         volume: Vec<Arc<AtomicU32>>,
+        position: Arc<AtomicU64>,
 
     ) -> Result<cpal::Stream, cpal::BuildStreamError> {
         let err_fn = |err| eprintln!("Errore nello stream: {}", err);
         let config = self.config.clone();
 
         match self.sample_format {
-            SampleFormat::F32 => self.create_stream::<f32>(&config,samples, muted, volume, err_fn),
-            SampleFormat::I16 => self.create_stream::<i16>(&config, samples, muted,/* samples_a, samples_b, */ volume, err_fn),
-            SampleFormat::U16 => self.create_stream::<u16>(&config, samples, muted,/* samples_a, samples_b, */volume , err_fn),
+            SampleFormat::F32 => self.create_stream::<f32>(&config,samples, muted, volume, position, err_fn),
+            SampleFormat::I16 => self.create_stream::<i16>(&config, samples, muted,/* samples_a, samples_b, */ volume, position, err_fn),
+            SampleFormat::U16 => self.create_stream::<u16>(&config, samples, muted,/* samples_a, samples_b, */volume , position, err_fn),
             _ => panic!("Formato non supportato"),
         }
     }
@@ -73,11 +74,13 @@ impl AudioEngine {
         data: Vec<WavData>,
         muted: Vec<Arc<AtomicBool>>,
         volume: Vec<Arc<AtomicU32>>,
+        position: Arc<AtomicU64>,
         err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
         T: Sample + cpal::SizedSample + FromSample<f32>,
     {
+        let mut global_frame: u64 = 0; // posizione attuale globale
         let channels_device = config.channels as usize;
         let channels: Vec<usize> = data.iter()
             .map(|d| {
@@ -162,6 +165,8 @@ impl AudioEngine {
                     for (p, r) in pos.iter_mut().zip(ratio.iter()) {
                         *p += r ;
                     }
+                    global_frame += 1; // aggiorna posizione attuale globale
+                    position.store(global_frame, Ordering::Relaxed); // e la stora nel puntatore
                 }
             },
             err_fn,

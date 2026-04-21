@@ -1,4 +1,4 @@
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU32, Ordering}};
+use std::sync::{Arc, atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}};
 use egui_file_dialog::FileDialog;
 use crate::audio::{AudioEngine, WavData};
 use eframe::egui;
@@ -15,6 +15,8 @@ pub struct MyDawApp {
     track_files: Vec<PathBuf>,
     track_volumes: Vec<f32>,
     track_volume_atomics: Vec<Arc<AtomicU32>>,
+    playback_pos: Arc<AtomicU64>,
+    playback_len: u64,
 }
 
 impl MyDawApp {
@@ -29,8 +31,21 @@ impl MyDawApp {
             track_volume_atomics: Vec::new(),
             file_dialog: FileDialog::new(),
             track_files: Vec::new(),
+            playback_pos: Arc::<AtomicU64>::new(0.into()),
+            playback_len: 0,
         }
     }
+    fn recalculate_playback_len(&mut self) {
+    let device_rate = self.engine.config.sample_rate as f64;
+    self.playback_len = self.track_files.iter()
+        .map(|path| {
+            let data = AudioEngine::load_wav(path.to_str().unwrap());
+            let ratio = (data.spec.sample_rate as f64 / device_rate) * data.spec.channels as f64;
+            (data.samples.len() as f64 / ratio) as u64
+        })
+        .max()
+        .unwrap_or(0);
+}
 }
 
 impl eframe::App for MyDawApp {
@@ -60,9 +75,13 @@ impl eframe::App for MyDawApp {
             // Check if the user picked a file.
             if let Some(paths) = self.file_dialog.take_selected_multiple() {
                 self.track_files.extend(paths); // take_selected_multiple() restituisce un Option<Vec<PathBuf>>> che, dopo l'unwrap dall'option, è esattamente uguale al nostro track_files, quindi usiamo il risultato per estendere la nostra lista.
+                self.recalculate_playback_len();
             }
 
             if ui.button(if self.is_playing && !self.is_paused { "Pause" } else { "Play" }).clicked() {
+                    if self.track_files.is_empty() {
+                        return; // niente da fare
+                    }
                 if !self.is_playing && !self.is_paused{
                     // Carichiamo i file
                     let data: Vec<WavData> = self.track_files
@@ -70,6 +89,15 @@ impl eframe::App for MyDawApp {
                         .map(|path| AudioEngine::load_wav(path.to_str().unwrap()))
                         .collect();
 
+                    let device_rate = self.engine.config.sample_rate as f64;
+                    self.playback_len = data.iter()
+                        .map(|d| {
+                            let ratio = (d.spec.sample_rate as f64 / device_rate) * d.spec.channels as f64;
+                            (d.samples.len() as f64 / ratio) as u64
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    self.playback_pos.store(0 as u64, Ordering::Relaxed);
 
                     // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
                     // questo l'ha fatto claude ma ha senso e funziona
@@ -87,10 +115,11 @@ impl eframe::App for MyDawApp {
                         .collect();
 
                     let volume_for_stream: Vec<Arc<AtomicU32>> = volume.iter().map(|v| Arc::clone(v)).collect();
+                    let position_for_stream= Arc::clone(&self.playback_pos);
                     
                     // Creiamo lo stream usando la logica che hai già scritto
 
-                    if let Ok(s) = self.engine.setup_stream(data, muted_for_stream, volume_for_stream) {
+                    if let Ok(s) = self.engine.setup_stream(data, muted_for_stream, volume_for_stream, position_for_stream) {
                         use cpal::traits::StreamTrait;
                         s.play().unwrap();
                         self.stream = Some(s); // Salviamo lo stream per non farlo morire
@@ -116,10 +145,20 @@ impl eframe::App for MyDawApp {
                     }
                 }
             }
+            if self.playback_len > 0 {
+                let current = self.playback_pos.load(Ordering::Relaxed); // * 10;
+                if current >= self.playback_len {
+                    self.stream = None;
+                    self.is_playing = false;
+                    self.is_paused = false;
+                    self.playback_pos.store(0 as u64, Ordering::Relaxed);
+                }
+            }
             if ui.button("Stop").clicked() {
                     self.stream = None; // Fermiamo lo stream distruggendolo
                     self.is_playing = false;
                     self.is_paused = false;
+                    self.playback_pos.store(0 as u64, Ordering::Relaxed);
             }
             for (i, muted) in self.track_muted.iter().enumerate() {
                 let is_muted = muted.load(Ordering::Relaxed);
@@ -128,13 +167,15 @@ impl eframe::App for MyDawApp {
                     muted.store(!is_muted, Ordering::Relaxed);
                 }
             }
-
+            // non possiamo modificare un elemento di un vettore mentre lo stiamo iterando
+            // ma possiamo segnarci cosa vogliamo eliminare alla fine dell'iterazione
+            // qui inizializiamo la variabile dove ci segneremo il valore in track_files da eliminare
             let mut to_remove = None;
 
             for (i, _track) in self.track_files.iter().enumerate() {
                 let label = format!("Rimuovi traccia {}", i + 1);
                 if ui.button(label).clicked() {
-                    to_remove = Some(i);
+                    to_remove = Some(i); // qui salviamo ciò che vogliamo eliminare -> vedi riga 193 per eliminazione
                 }
             }
 
@@ -147,29 +188,42 @@ impl eframe::App for MyDawApp {
                     self.track_volume_atomics[i].store(v.to_bits(), Ordering::Relaxed);
                 }
             }
-
+            
+            // alla fine delle varie iterazioni, procediamo a eliminare ciò che ci siamo segnati
             if let Some(i) = to_remove {
-                self.track_files.remove(i);
+                self.track_files.remove(i); // prima rimuovi il file
+
+                if i < self.track_muted.len() { // poi rimuove tasto mute della traccia appena eliminata
+                    self.track_muted.remove(i);
+                }
+                if i < self.track_volumes.len() { // infine rimuove i parametri di volume associati
+                    self.track_volumes.remove(i);
+                    self.track_volume_atomics.remove(i);
+                }
+
+                self.recalculate_playback_len();    // ricalcola DOPO la rimozione
+            }
+
+            // PROGRESS BAR
+            // AI GENERATED, onestamente frega una sega
+            // converti la posizione in secondi
+            let device_rate = self.engine.config.sample_rate as f64;
+            let current = self.playback_pos.load(Ordering::Relaxed);
+            let progress = if self.playback_len > 0 {
+                current as f32 / self.playback_len as f32
+            } else {
+                0.0
+            };
+            let current_secs = current as f64 / device_rate;
+            let total_secs = self.playback_len as f64 / device_rate;
+
+            ui.add(
+                egui::ProgressBar::new(progress)
+                    .text(format!("{:.1} / {:.1} sec", current_secs, total_secs))
+            );        
+            if self.is_playing && !self.is_paused {
+                ctx.request_repaint_after(std::time::Duration::from_millis(16)); // ~60fps
             }
         });
-    }
-    
-    fn save(&mut self, _storage: &mut dyn eframe::Storage) {}
-        
-    fn auto_save_interval(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(30)
-    }
-    
-    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // NOTE: a bright gray makes the shadows of the windows look weird.
-        // We use a bit of transparency so that if the user switches on the
-        // `transparent()` option they get immediate results.
-        egui::Color32::from_rgba_unmultiplied(12, 12, 12, 180).to_normalized_gamma_f32()
-    
-        // _visuals.window_fill() would also be a natural choice
-    }
-    
-    fn persist_egui_memory(&self) -> bool {
-        true
     }
 }
