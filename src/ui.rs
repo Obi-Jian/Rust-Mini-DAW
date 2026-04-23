@@ -1,6 +1,6 @@
 use std::sync::{Arc, atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}};
 use egui_file_dialog::FileDialog;
-use crate::audio::{AudioEngine, WavData};
+use crate::audio::{AudioEngine, Track};
 use eframe::egui;
 use cpal::traits::StreamTrait;
 use std::path::PathBuf;
@@ -84,50 +84,77 @@ impl eframe::App for MyDawApp {
                     }
                 if !self.is_playing && !self.is_paused{
                     // Carichiamo i file
-                    let data: Vec<WavData> = self.track_files
+                let tracks: Vec<Track> = self.track_files
+                    .iter()
+                    .map(|path| {
+                        Track {
+                            data: AudioEngine::load_wav(path.to_str().unwrap()),
+                            // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
+                            muted: Arc::new(AtomicBool::new(false)),
+                            volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+                        }
+                    })
+                    .collect();
+                
+                    /* self.track_files
                         .iter()
-                        .map(|path| AudioEngine::load_wav(path.to_str().unwrap()))
-                        .collect();
+                        .zip(tracks.iter())
+                        .map(|(path, track)| track.data = AudioEngine::load_wav(path.to_str().unwrap()))
+                        .collect(); */
 
                     let device_rate = self.engine.config.sample_rate as f64;
-                    self.playback_len = data.iter()
+                    self.playback_len = tracks.iter()
                         .map(|d| {
-                            let ratio = (d.spec.sample_rate as f64 / device_rate) * d.spec.channels as f64;
-                            (d.samples.len() as f64 / ratio) as u64
+                            let ratio = (d.data.spec.sample_rate as f64 / device_rate) * d.data.spec.channels as f64;
+                            (d.data.samples.len() as f64 / ratio) as u64
                         })
                         .max()
                         .unwrap_or(0);
                     self.playback_pos.store(0 as u64, Ordering::Relaxed);
 
-                    // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
+                    /* // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
                     // questo l'ha fatto claude ma ha senso e funziona
-                    let muted: Vec<Arc<AtomicBool>> = (0..data.len())
+                    let muted: Vec<Arc<AtomicBool>> = (0..tracks.len())
                         .map(|_| Arc::new(AtomicBool::new(false)))
                         .collect();
 
                     // clona per passarli allo stream (la UI tiene gli originali)
-                    let muted_for_stream: Vec<Arc<AtomicBool>> = muted.iter().map(|m| Arc::clone(m)).collect();
+                    // let muted_for_stream: Vec<Arc<AtomicBool>> = muted.iter().map(|m| Arc::clone(m)).collect();
+                    muted
+                        .iter()
+                        .zip(tracks.iter())
+                        .map(|(m, track)| track.muted = Arc::clone(m))
+                        .collect();
 
 
                     // UI: salva il valore
-                    let volume: Vec<Arc<AtomicU32>> = (0..data.len())
+                    let volume: Vec<Arc<AtomicU32>> = (0..tracks.len())
                         .map(|_| Arc::new(AtomicU32::new(1.0f32.to_bits())))
                         .collect();
 
-                    let volume_for_stream: Vec<Arc<AtomicU32>> = volume.iter().map(|v| Arc::clone(v)).collect();
-                    let position_for_stream= Arc::clone(&self.playback_pos);
-                    
+
+                    // let volume_for_stream: Vec<Arc<AtomicU32>> = volume.iter().map(|v| Arc::clone(v)).collect();
+                    volume.iter()
+                        .zip(tracks.iter())
+                        .map(|(m, track)| track.volume = Arc::clone(m))
+                        .collect(); */
+
+                    self.track_muted = tracks.iter().map(|t| Arc::clone(&t.muted)).collect();
+                    self.track_volume_atomics = tracks.iter().map(|t| Arc::clone(&t.volume)).collect();
+                    self.track_volumes = vec![1.0f32; tracks.len()];
+
+                    let position_for_stream = Arc::clone(&self.playback_pos);                    
                     // Creiamo lo stream usando la logica che hai già scritto
 
-                    if let Ok(s) = self.engine.setup_stream(data, muted_for_stream, volume_for_stream, position_for_stream) {
+                    if let Ok(s) = self.engine.setup_stream(tracks, position_for_stream) {
                         use cpal::traits::StreamTrait;
                         s.play().unwrap();
                         self.stream = Some(s); // Salviamo lo stream per non farlo morire
-                        self.track_muted = muted;  // la UI tiene i suoi Arc
+                        // self.track_muted = muted;  // la UI tiene i suoi Arc
                         self.is_playing = true;
                         self.is_paused = false;
-                        self.track_volume_atomics = volume;
-                        self.track_volumes = vec![1.0f32; self.track_files.len()];
+                        // self.track_volume_atomics = volume;
+                        // self.track_volumes = vec![1.0f32; self.track_files.len()];
                         ctx.request_repaint();  // ← forza un nuovo frame, non so cosa cambia ma funziona anche senza
                     } else {println!("Errore nel caricamento dello stream")}
                 } else if self.is_playing && !self.is_paused {

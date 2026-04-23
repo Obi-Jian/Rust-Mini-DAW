@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
-use cpal::{Sample, SampleFormat, FromSample};
+use cpal::{FromSample, Sample, SampleFormat};
 use hound;
 
 pub struct WavData {
@@ -15,6 +15,21 @@ pub struct AudioEngine {
     pub config: cpal::StreamConfig,
     pub sample_format: cpal::SampleFormat,
 }
+
+pub struct Track {
+    pub data: WavData,
+    pub muted: Arc<AtomicBool>,
+    pub volume: Arc<AtomicU32>,
+
+}
+
+/* impl Track {
+    fn new(samples: WavData, muted: Arc<AtomicBool>, volume: Arc<AtomicU32>) -> Self {
+        let lowpass_enabled = Arc::<AtomicBool>::new(false.into());
+        let lowpass_size= Arc::<AtomicU32>::new(0.into());
+        Self { data: samples, muted, volume, lowpass_enabled, lowpass_size}
+    }
+} */
 
 impl AudioEngine {
     pub fn new() -> Self {
@@ -48,21 +63,27 @@ impl AudioEngine {
     }
 
     // Questa è la tua build_stream trasformata in metodo
+    // DA MODIFICARE
     pub fn setup_stream(
         &self,
-        samples: Vec<WavData>,
+        tracks: Vec<Track>,
+        /* samples: Vec<WavData>,
         muted: Vec<Arc<AtomicBool>>,
-        volume: Vec<Arc<AtomicU32>>,
+        volume: Vec<Arc<AtomicU32>>, */
         position: Arc<AtomicU64>,
 
     ) -> Result<cpal::Stream, cpal::BuildStreamError> {
+        // let tracks = Track::new( samples, muted, volume);
         let err_fn = |err| eprintln!("Errore nello stream: {}", err);
         let config = self.config.clone();
 
         match self.sample_format {
-            SampleFormat::F32 => self.create_stream::<f32>(&config,samples, muted, volume, position, err_fn),
+            /* SampleFormat::F32 => self.create_stream::<f32>(&config,samples, muted, volume, position, err_fn),
             SampleFormat::I16 => self.create_stream::<i16>(&config, samples, muted,/* samples_a, samples_b, */ volume, position, err_fn),
-            SampleFormat::U16 => self.create_stream::<u16>(&config, samples, muted,/* samples_a, samples_b, */volume , position, err_fn),
+            SampleFormat::U16 => self.create_stream::<u16>(&config, samples, muted,/* samples_a, samples_b, */volume , position, err_fn), */
+            SampleFormat::F32 => self.create_stream::<f32>(&config,tracks, position, err_fn),
+            SampleFormat::I16 => self.create_stream::<i16>(&config,tracks, position, err_fn),
+            SampleFormat::U16 => self.create_stream::<u16>(&config,tracks, position, err_fn),
             _ => panic!("Formato non supportato"),
         }
     }
@@ -71,20 +92,42 @@ impl AudioEngine {
     fn create_stream<T>(
         &self,
         config: &cpal::StreamConfig,
-        data: Vec<WavData>,
+        tracks: Vec<Track>,
+        /* data: Vec<WavData>,
         muted: Vec<Arc<AtomicBool>>,
-        volume: Vec<Arc<AtomicU32>>,
+        volume: Vec<Arc<AtomicU32>>, */
         position: Arc<AtomicU64>,
         err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
     where
         T: Sample + cpal::SizedSample + FromSample<f32>,
     {
+        /* let data: Vec<&WavData> = tracks
+            .iter()
+            .map(move| track | {
+                let c = &track.data;
+                c
+            })
+            .collect();
+        let muted: Vec<Arc<AtomicBool>> = tracks
+            .iter()
+            .map(move| track | {
+                let c = track.muted;
+                c
+            })
+            .collect();
+        let volume: Vec<Arc<AtomicU32>> = tracks
+            .iter()
+            .map(move| track | {
+                let c = track.volume;
+                c
+            })
+            .collect(); */
         let mut global_frame: u64 = 0; // posizione attuale globale
         let channels_device = config.channels as usize;
-        let channels: Vec<usize> = data.iter()
+        let channels: Vec<usize> = tracks.iter()
             .map(|d| {
-                let ch = d.spec.channels as usize;
+                let ch = d.data.spec.channels as usize;
                 assert!(ch > 0, "Traccia con 0 canali!");
                 ch
             })
@@ -93,11 +136,11 @@ impl AudioEngine {
         // ratio è il rapporto tra sample rate del file e del device, con n tracce audio ci sono n elementi nel vettore ratio
         // si trova dividendo il primo per il secondo e poi moltiplicando per il numero di canali del file
         // es. con device a 48.1Hz traccia stereo a 44.1Hz si fa (441000/48100)*2 = 1.8
-        let ratio: Vec<f64> = data.iter()
-            .map(|d| (d.spec.sample_rate as f64 / config.sample_rate as f64 ) * d.spec.channels as f64)
+        let ratio: Vec<f64> = tracks.iter()
+            .map(|d| (d.data.spec.sample_rate as f64 / config.sample_rate as f64 ) * d.data.spec.channels as f64)
             .collect();
 
-        let mut pos: Vec<f64> = vec![0.0; data.len()];
+        let mut pos: Vec<f64> = vec![0.0; tracks.len()];
 
         let get_interpolated = |samples: &[f32], pos: f64| -> f32 {
 
@@ -130,13 +173,13 @@ impl AudioEngine {
 
                         // .zip() prende due iteratori e li "accoppia" elemento per elemento, producendo tuple
                         // [1, 2, 3].iter().zip([10, 20, 30].iter()) produce: (&1, &10), (&2, &20), (&3, &30)
-                        let val: Vec<f32> = data.iter()
-                            .zip(muted.iter()) // produce: (d, m)
+                        let val: Vec<f32> = tracks.iter()
+                            //.zip(muted.iter()) // produce: (d, m)
                             .zip(channels.iter()) // produce: ((d, m), num_ch)
                             .zip(pos.iter()) // produe: (((d, m), num_ch), p)
-                            .zip(volume.iter())
-                            .map(|((((d, m), &num_ch), &p), vol)| {
-                                if m.load(Ordering::Relaxed) {
+                            //.zip(volume.iter())
+                            .map(|((track, &num_ch), &p)| {
+                                if track.muted.load(Ordering::Relaxed) {
                                     0.0
                                 } else {
                                     // ch è il canale nel frame che stiamo controllando
@@ -144,14 +187,14 @@ impl AudioEngine {
                                     // 1%1 = 0, 1%2 = 1 2%2 = 0, 2%1 = 0 (impossibile, non può essere il secondo ch se audio ha solo 1 canale)
                                     let c = ch % num_ch;
                                     // p all'inizio è tutto 0, poi viene aggiornato dopo ogni frame aggiornando il rateo (vedi più in basso)
-                                    let sample = get_interpolated(&d.samples, p + c as f64);
-                                    let v = f32::from_bits(vol.load(Ordering::Relaxed));
+                                    let sample = get_interpolated(&track.data.samples, p + c as f64);
+                                    let v = f32::from_bits(track.volume.load(Ordering::Relaxed));
                                     sample * v
                                 }
                             })
                             .collect();
                         
-                        let divisore = 1.0 / data.len() as f32;
+                        let divisore = 1.0 / tracks.len() as f32;
                         let somma : f32 = val.iter().sum();
 
                         *output = T::from_sample(somma * divisore);
