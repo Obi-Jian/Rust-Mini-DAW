@@ -1,5 +1,6 @@
-use std::sync::{Arc, atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}};
 use egui_file_dialog::FileDialog;
+use fundsp::prelude::{AudioUnit, lowpass_hz};
 use crate::audio::{AudioEngine, Track};
 use eframe::egui;
 use cpal::traits::StreamTrait;
@@ -17,6 +18,9 @@ pub struct MyDawApp {
     track_volume_atomics: Vec<Arc<AtomicU32>>,
     playback_pos: Arc<AtomicU64>,
     playback_len: u64,
+    track_filter_enabled: Vec<Arc<AtomicBool>>,
+    track_filter_cutoff: Vec<Arc<AtomicU32>>,
+    track_filter: Vec<Arc<Mutex<Box<dyn AudioUnit + Send>>>>,
 }
 
 impl MyDawApp {
@@ -33,6 +37,9 @@ impl MyDawApp {
             track_files: Vec::new(),
             playback_pos: Arc::<AtomicU64>::new(0.into()),
             playback_len: 0,
+            track_filter_enabled: Vec::new(),
+            track_filter_cutoff: Vec::new(),
+            track_filter: Vec::new(),
         }
     }
     fn recalculate_playback_len(&mut self) {
@@ -87,20 +94,24 @@ impl eframe::App for MyDawApp {
                 let tracks: Vec<Track> = self.track_files
                     .iter()
                     .map(|path| {
+                        let cutoff = 1000.0f32;
+                        let filter = lowpass_hz(cutoff, 0.7);                      
                         Track {
                             data: AudioEngine::load_wav(path.to_str().unwrap()),
                             // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
                             muted: Arc::new(AtomicBool::new(false)),
                             volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+                            filter_enabled: Arc::new(AtomicBool::new(false)),
+                            filter_cutoff: Arc::new(AtomicU32::new(3)),
+                            filter: Arc::new(Mutex::new(Box::new(filter))),
                         }
                     })
                     .collect();
+
+                self.track_filter_enabled = tracks.iter().map(|t| Arc::clone(&t.filter_enabled)).collect();
+                self.track_filter_cutoff = tracks.iter().map(|t| Arc::clone(&t.filter_cutoff)).collect();
+                self.track_filter = tracks.iter().map(|t| Arc::clone(&t.filter)).collect();  
                 
-                    /* self.track_files
-                        .iter()
-                        .zip(tracks.iter())
-                        .map(|(path, track)| track.data = AudioEngine::load_wav(path.to_str().unwrap()))
-                        .collect(); */
 
                     let device_rate = self.engine.config.sample_rate as f64;
                     self.playback_len = tracks.iter()
@@ -111,33 +122,6 @@ impl eframe::App for MyDawApp {
                         .max()
                         .unwrap_or(0);
                     self.playback_pos.store(0 as u64, Ordering::Relaxed);
-
-                    /* // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
-                    // questo l'ha fatto claude ma ha senso e funziona
-                    let muted: Vec<Arc<AtomicBool>> = (0..tracks.len())
-                        .map(|_| Arc::new(AtomicBool::new(false)))
-                        .collect();
-
-                    // clona per passarli allo stream (la UI tiene gli originali)
-                    // let muted_for_stream: Vec<Arc<AtomicBool>> = muted.iter().map(|m| Arc::clone(m)).collect();
-                    muted
-                        .iter()
-                        .zip(tracks.iter())
-                        .map(|(m, track)| track.muted = Arc::clone(m))
-                        .collect();
-
-
-                    // UI: salva il valore
-                    let volume: Vec<Arc<AtomicU32>> = (0..tracks.len())
-                        .map(|_| Arc::new(AtomicU32::new(1.0f32.to_bits())))
-                        .collect();
-
-
-                    // let volume_for_stream: Vec<Arc<AtomicU32>> = volume.iter().map(|v| Arc::clone(v)).collect();
-                    volume.iter()
-                        .zip(tracks.iter())
-                        .map(|(m, track)| track.volume = Arc::clone(m))
-                        .collect(); */
 
                     self.track_muted = tracks.iter().map(|t| Arc::clone(&t.muted)).collect();
                     self.track_volume_atomics = tracks.iter().map(|t| Arc::clone(&t.volume)).collect();
@@ -150,11 +134,8 @@ impl eframe::App for MyDawApp {
                         use cpal::traits::StreamTrait;
                         s.play().unwrap();
                         self.stream = Some(s); // Salviamo lo stream per non farlo morire
-                        // self.track_muted = muted;  // la UI tiene i suoi Arc
                         self.is_playing = true;
                         self.is_paused = false;
-                        // self.track_volume_atomics = volume;
-                        // self.track_volumes = vec![1.0f32; self.track_files.len()];
                         ctx.request_repaint();  // ← forza un nuovo frame, non so cosa cambia ma funziona anche senza
                     } else {println!("Errore nel caricamento dello stream")}
                 } else if self.is_playing && !self.is_paused {
@@ -187,6 +168,8 @@ impl eframe::App for MyDawApp {
                     self.is_paused = false;
                     self.playback_pos.store(0 as u64, Ordering::Relaxed);
             }
+
+            // bottoni per applicare un filtro a una traccia specifica
             for (i, muted) in self.track_muted.iter().enumerate() {
                 let is_muted = muted.load(Ordering::Relaxed);
                 let label = format!("Traccia {} — {}", i + 1, if is_muted { "Resume" } else { "Mute" });
@@ -206,13 +189,31 @@ impl eframe::App for MyDawApp {
                 }
             }
 
-            for (i, _track) in self.track_files.iter().enumerate() {
-                // Nel loop delle tracce in update():
-                if i >= self.track_volumes.len() { continue; } // guard
+            // bottoni ai generated
+            for i in 0..self.track_files.len() {
+                if i >= self.track_volumes.len() { continue; }
+
+                // slider volume esistente
                 let mut v = self.track_volumes[i];
                 if ui.add(egui::Slider::new(&mut v, 0.0..=1.0).text("Volume")).changed() {
                     self.track_volumes[i] = v;
                     self.track_volume_atomics[i].store(v.to_bits(), Ordering::Relaxed);
+                }
+
+                // toggle filtro
+                let mut enabled = self.track_filter_enabled[i].load(Ordering::Relaxed);
+                if ui.checkbox(&mut enabled, "Lowpass").changed() {
+                    self.track_filter_enabled[i].store(enabled, Ordering::Relaxed);
+                }
+
+                // slider cutoff
+                if enabled {
+                    let mut cutoff = f32::from_bits(self.track_filter_cutoff[i].load(Ordering::Relaxed));
+                    if ui.add(egui::Slider::new(&mut cutoff, 200.0..=8000.0).text("Cutoff Hz")).changed() {
+                        self.track_filter_cutoff[i].store(cutoff.to_bits(), Ordering::Relaxed);
+                        // ricrea il filtro con il nuovo cutoff
+                        *self.track_filter[i].lock().unwrap() = Box::new(lowpass_hz(cutoff, 0.7));
+                    }
                 }
             }
             

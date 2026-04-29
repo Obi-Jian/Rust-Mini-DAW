@@ -1,8 +1,9 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Sample, SampleFormat};
+use fundsp::prelude::AudioUnit;
 use hound;
 
 pub struct WavData {
@@ -20,7 +21,11 @@ pub struct Track {
     pub data: WavData,
     pub muted: Arc<AtomicBool>,
     pub volume: Arc<AtomicU32>,
-
+    /* pub lowpass_enabled: Arc<AtomicBool>,
+    pub lowpass_size: Arc<AtomicU32>, */
+    pub filter_enabled: Arc<AtomicBool>,
+    pub filter_cutoff: Arc<AtomicU32>,   // Hz come f32 bits
+    pub filter: Arc<Mutex<Box<dyn AudioUnit + Send>>>,
 }
 
 /* impl Track {
@@ -67,9 +72,6 @@ impl AudioEngine {
     pub fn setup_stream(
         &self,
         tracks: Vec<Track>,
-        /* samples: Vec<WavData>,
-        muted: Vec<Arc<AtomicBool>>,
-        volume: Vec<Arc<AtomicU32>>, */
         position: Arc<AtomicU64>,
 
     ) -> Result<cpal::Stream, cpal::BuildStreamError> {
@@ -88,6 +90,42 @@ impl AudioEngine {
         }
     }
 
+    // questi sono filtri esempio per comprenderli meglio, quelli effettivi sono gestiti da fundsp
+    pub fn lowpass_wrong(
+        samples: Vec<u32>,
+        size: u32,
+    ) -> Vec<u32> { 
+        let mut filtered: Vec<u32> = Vec::new();
+        for frame in samples.windows(size as usize*2+1) { 
+            let mut media = 0;
+            for output in frame.iter() {
+                media += *output;           // somma tutto
+            }
+            media /= frame.len() as u32;   // dividi per il numero reale di elementi
+            filtered.push(media);
+        }
+        filtered
+    }
+
+    pub fn lowpass(samples: &[f32], size: usize) -> Vec<f32> {
+        let mut filtered = Vec::with_capacity(samples.len());
+        for i in 0..samples.len() {
+            // NOTA: i è l'index, non il contenuto
+            // per ogni i di samples iteriamo una finestra da start a end
+            // dopodichè facciamo la media degli elementi e pushiamo su filtered
+            // ci serve una finestra che cambia, quindi per ogni elemento di samples la ricalcoliamo
+            // start ed end cambiano perchè per gli elementi da 0 a size deve essere i
+            // da samples.len() - size a sample.len() deve essere i - samples.len()
+            // in tutti gli altri casi va da i - size a i + size + 1
+            let start = i.saturating_sub(size);
+            let end = (i + size + 1).min(samples.len());
+            let window = &samples[start..end];
+            let media: f32 = window.iter().sum::<f32>() / window.len() as f32;
+            filtered.push(media);
+        }
+        filtered
+    }
+
     // Funzione privata helper per gestire i generici
     fn create_stream<T>(
         &self,
@@ -102,27 +140,6 @@ impl AudioEngine {
     where
         T: Sample + cpal::SizedSample + FromSample<f32>,
     {
-        /* let data: Vec<&WavData> = tracks
-            .iter()
-            .map(move| track | {
-                let c = &track.data;
-                c
-            })
-            .collect();
-        let muted: Vec<Arc<AtomicBool>> = tracks
-            .iter()
-            .map(move| track | {
-                let c = track.muted;
-                c
-            })
-            .collect();
-        let volume: Vec<Arc<AtomicU32>> = tracks
-            .iter()
-            .map(move| track | {
-                let c = track.volume;
-                c
-            })
-            .collect(); */
         let mut global_frame: u64 = 0; // posizione attuale globale
         let channels_device = config.channels as usize;
         let channels: Vec<usize> = tracks.iter()
@@ -166,7 +183,6 @@ impl AudioEngine {
                     for (ch, output) in frame.iter_mut().enumerate() {
                         // per ogni canale del device, leggiamo il canale corrispondente
                         // del file (wrappando se il file ha meno canali, es. mono su stereo)
-                        
                         /* let chan: Vec<usize> = channels.iter()
                             .map(|d| ch % d )
                             .collect(); */ // abbiamo implementato l'iter dei canali direttamente in val
@@ -188,6 +204,14 @@ impl AudioEngine {
                                     let c = ch % num_ch;
                                     // p all'inizio è tutto 0, poi viene aggiornato dopo ogni frame aggiornando il rateo (vedi più in basso)
                                     let sample = get_interpolated(&track.data.samples, p + c as f64);
+                                    let sample = if track.filter_enabled.load(Ordering::Relaxed) {
+                                        let mut f = track.filter.lock().unwrap();
+                                        let mut out = [0.0f32];
+                                        f.tick(&[sample], &mut out);
+                                        out[0]
+                                    } else {
+                                    sample
+                                };
                                     let v = f32::from_bits(track.volume.load(Ordering::Relaxed));
                                     sample * v
                                 }
