@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Sample, SampleFormat};
@@ -21,13 +21,35 @@ pub struct Track {
     pub data: WavData,
     pub muted: Arc<AtomicBool>,
     pub volume: Arc<AtomicU32>,
-    /* pub lowpass_enabled: Arc<AtomicBool>,
-    pub lowpass_size: Arc<AtomicU32>, */
-    pub filter_enabled: Arc<AtomicBool>,
-    pub filter_cutoff: Arc<AtomicU32>,   // Hz come f32 bits
-    pub filter: Arc<Mutex<Box<dyn AudioUnit + Send>>>,
+    pub filters: Vec<Filter>
 }
 
+// #[derive(Clone, Copy, PartialEq)]
+/* pub enum FilterType {
+    None,
+    Lowpass,
+    Highpass,
+    Bandpass,
+    Notch,
+}
+
+impl FilterType {
+    pub fn to_u8(self) -> u8 { self as u8 }
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            1 => FilterType::Lowpass,
+            2 => FilterType::Highpass,
+            3 => FilterType::Bandpass,
+            4 => FilterType::Notch,
+            _ => FilterType::None,
+        }
+    }
+} */
+pub struct Filter {
+    pub filter_enabled: Arc<AtomicU8>,
+    pub filter_cutoff: Arc<AtomicU32>,   // Hz come f32 bits
+    pub filter: Arc<Mutex<Option<Box<dyn AudioUnit + Send>>>>,
+}
 /* impl Track {
     fn new(samples: WavData, muted: Arc<AtomicBool>, volume: Arc<AtomicU32>) -> Self {
         let lowpass_enabled = Arc::<AtomicBool>::new(false.into());
@@ -203,15 +225,35 @@ impl AudioEngine {
                                     // 1%1 = 0, 1%2 = 1 2%2 = 0, 2%1 = 0 (impossibile, non può essere il secondo ch se audio ha solo 1 canale)
                                     let c = ch % num_ch;
                                     // p all'inizio è tutto 0, poi viene aggiornato dopo ogni frame aggiornando il rateo (vedi più in basso)
-                                    let sample = get_interpolated(&track.data.samples, p + c as f64);
-                                    let sample = if track.filter_enabled.load(Ordering::Relaxed) {
-                                        let mut f = track.filter.lock().unwrap();
-                                        let mut out = [0.0f32];
-                                        f.tick(&[sample], &mut out);
-                                        out[0]
-                                    } else {
-                                    sample
-                                };
+                                    let mut sample = get_interpolated(&track.data.samples, p + c as f64);
+                                    // qui modifichiamo ogni sample, in base al tipo di filtro che abbiamo impostato (da ui, sennò di default è 0)
+                                    for filt in &track.filters { 
+                                        if filt.filter_enabled.load(Ordering::Relaxed) != 0 {
+                                            // non ho capito perchè ha fatto così, io avrei usato un match, ma non andava
+                                            let mut guard = filt.filter.lock().unwrap();
+                                            if let Some(f) = guard.as_mut() {
+                                                let mut out = [0.0f32];
+                                                f.tick(&[sample], &mut out);
+                                                sample = out[0];
+                                            }
+                                            /* let mut f = match filt.filter.lock().unwrap() {
+                                                Some(value) =>  value,
+                                                _ => break,
+                                            }
+                                            let mut out = [0.0f32];
+                                            f.tick(&[sample], &mut out);
+                                            sample = out[0]; */
+                                        }
+                                        /* match FilterType::from_u8(track.filter_enabled.load(Ordering::Relaxed)/* if (track.filter_enabled.load(Ordering::Relaxed) != 0) */ ){
+                                            FilterType::None => sample,
+                                            _ => {
+                                                let mut f = track.filter.lock().unwrap();
+                                                let mut out = [0.0f32];
+                                                f.tick(&[sample], &mut out);
+                                                out[0]
+                                        }
+                                        }; */
+                                    }
                                     let v = f32::from_bits(track.volume.load(Ordering::Relaxed));
                                     sample * v
                                 }

@@ -1,7 +1,7 @@
-use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}};
+use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering}};
 use egui_file_dialog::FileDialog;
-use fundsp::prelude::{AudioUnit, lowpass_hz};
-use crate::audio::{AudioEngine, Track};
+use fundsp::{prelude::{AudioUnit, bandpass_hz, highpass_hz, lowpass_hz, notch_hz}};
+use crate::audio::{AudioEngine, Filter, Track};
 use eframe::egui;
 use cpal::traits::StreamTrait;
 use std::path::PathBuf;
@@ -18,9 +18,7 @@ pub struct MyDawApp {
     track_volume_atomics: Vec<Arc<AtomicU32>>,
     playback_pos: Arc<AtomicU64>,
     playback_len: u64,
-    track_filter_enabled: Vec<Arc<AtomicBool>>,
-    track_filter_cutoff: Vec<Arc<AtomicU32>>,
-    track_filter: Vec<Arc<Mutex<Box<dyn AudioUnit + Send>>>>,
+    track_filters: Vec<Vec<Filter>>,
 }
 
 impl MyDawApp {
@@ -37,9 +35,10 @@ impl MyDawApp {
             track_files: Vec::new(),
             playback_pos: Arc::<AtomicU64>::new(0.into()),
             playback_len: 0,
-            track_filter_enabled: Vec::new(),
+            /* track_filter_enabled: Vec::new(),
             track_filter_cutoff: Vec::new(),
-            track_filter: Vec::new(),
+            track_filter: Vec::new(), */
+            track_filters: Vec::new(),
         }
     }
     fn recalculate_playback_len(&mut self) {
@@ -85,33 +84,87 @@ impl eframe::App for MyDawApp {
                 self.recalculate_playback_len();
             }
 
+            if let Some(paths) = self.file_dialog.take_selected_multiple() {
+                self.track_files.extend(paths);
+                // sincronizza track_filters con track_files
+                while self.track_filters.len() < self.track_files.len() {
+                    self.track_filters.push(Vec::new());
+                }
+                self.recalculate_playback_len();
+            }
+
             if ui.button(if self.is_playing && !self.is_paused { "Pause" } else { "Play" }).clicked() {
                     if self.track_files.is_empty() {
                         return; // niente da fare
                     }
                 if !self.is_playing && !self.is_paused{
                     // Carichiamo i file
-                let tracks: Vec<Track> = self.track_files
-                    .iter()
-                    .map(|path| {
-                        let cutoff = 1000.0f32;
-                        let filter = lowpass_hz(cutoff, 0.7);                      
-                        Track {
-                            data: AudioEngine::load_wav(path.to_str().unwrap()),
-                            // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
-                            muted: Arc::new(AtomicBool::new(false)),
-                            volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-                            filter_enabled: Arc::new(AtomicBool::new(false)),
-                            filter_cutoff: Arc::new(AtomicU32::new(3)),
-                            filter: Arc::new(Mutex::new(Box::new(filter))),
-                        }
-                    })
-                    .collect();
+                    let tracks: Vec<Track> = self.track_files
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, path)| {
+                            // recuperiamo il tipo di filtro e il suo cutoff da track_filter_enabled / track_filter_cutoff, per ogni track
+                            // questo perchè dopo che una traccia termina, vogliamo mantenere i suoi filtri
+                            
+                            // per ogni traccia (idx) stiamo andando a controllare il vettore corrispondente in track_filters,
+                            // per vedere se esistono già filtri (serve perchè quando una traccia termina, per esempio, si interrompe e va ricreata,
+                            // in questo modo si caricano i filtri che avevamo salvato, nella "nuova" traccia, ossia la stessa ricaricata).
+                            let existing_filters: Vec<Filter> = self.track_filters
+                                .get(idx)
+                                .map(|filters| filters.iter().map(|f| {
+                                    let enabled = f.filter_enabled.load(Ordering::Relaxed); // ordering semplicemente indica come si accede a filter_enabled in modo concorrente
+                                    let cutoff = f32::from_bits(f.filter_cutoff.load(Ordering::Relaxed));
+                                    let new_node: Option<Box<dyn AudioUnit + Send>> = match enabled {
+                                        1 => Some(Box::new(lowpass_hz(cutoff, 0.7))),
+                                        2 => Some(Box::new(highpass_hz(cutoff, 0.7))),
+                                        3 => Some(Box::new(bandpass_hz(cutoff, 0.7))),
+                                        4 => Some(Box::new(notch_hz(cutoff, 0.7))),
+                                        _ => None,
+                                    };
+                                    Filter {
+                                        filter_enabled: Arc::clone(&f.filter_enabled),
+                                        filter_cutoff: Arc::clone(&f.filter_cutoff),
+                                        filter: Arc::new(Mutex::new(new_node)),
+                                    }
+                                }).collect())
+                                .unwrap_or_default();
+                                // Quando non ci sono ancora filtri, self.track_filters.get(idx) restituisce None —
+                                // perché o track_filters è vuoto, o non ha ancora una entry per quell'indice.
+                                // .map(...) su None non esegue nulla e restituisce None. Poi .unwrap_or_default() su None
+                                // restituisce il valore di default del tipo —
+                                // e il default di Vec<Filter> è semplicemente Vec::new(), un vettore vuoto.
 
-                self.track_filter_enabled = tracks.iter().map(|t| Arc::clone(&t.filter_enabled)).collect();
-                self.track_filter_cutoff = tracks.iter().map(|t| Arc::clone(&t.filter_cutoff)).collect();
-                self.track_filter = tracks.iter().map(|t| Arc::clone(&t.filter)).collect();  
-                
+                            // uguale per volume, così rimane quando riparte la traccia quando premiamo play
+                            let volume = self.track_volume_atomics
+                                .get(idx)
+                                .map(|vol| vol.load(Ordering::Relaxed)/* AtomicU32::new(vol.to_bits()) */)
+                                .unwrap_or(1.0f32.to_bits());
+
+                            // let filter = lowpass_hz(cutoff, 0.7);                      
+                            Track {
+                                data: AudioEngine::load_wav(path.to_str().unwrap()),
+                                // crea un AtomicBool per ogni traccia, tutti a false (non mutati)
+                                muted: Arc::new(AtomicBool::new(false)),
+                                volume: Arc::new(AtomicU32::new(volume)),
+                                /* filter_enabled: Arc::new(AtomicU8::new(filter_enabled)),
+                                filter_cutoff: Arc::new(AtomicU32::new(filter_cutoff)),
+                                filter: Arc::new(Mutex::new(filter)), */
+                                filters: existing_filters,
+                            }
+                        })
+                        .collect();
+
+                    // popoliamo track filters con i filtri delle tracce che abbiamo appena creato (appena inserito il file)
+                    // track_filters è un vettore di, appunto, filtri in cui abbiamo puntatori ai valori dei filtri di ogni traccia.
+                    // ci servono perchè egui non può agire direttamente sui puntatori delle tracce, ma ha bisogno di altre variabili (clonate, quindi puntano agli stessi valori)
+                    self.track_filters = tracks
+                        .iter()
+                        .map(|t| t.filters.iter().map(|f| Filter {
+                            filter_enabled: Arc::clone(&f.filter_enabled),
+                            filter_cutoff: Arc::clone(&f.filter_cutoff),
+                            filter: Arc::clone(&f.filter),
+                        }).collect())
+                        .collect();
 
                     let device_rate = self.engine.config.sample_rate as f64;
                     self.playback_len = tracks.iter()
@@ -124,8 +177,21 @@ impl eframe::App for MyDawApp {
                     self.playback_pos.store(0 as u64, Ordering::Relaxed);
 
                     self.track_muted = tracks.iter().map(|t| Arc::clone(&t.muted)).collect();
+                    
+                    // Dopo la creazione dei Track — sincronizza lo slider della UI
+                    // 1. prima calcola track_volumes dai vecchi atomici
+                    self.track_volumes = (0..tracks.len())
+                        .map(|i| {
+                            self.track_volume_atomics
+                                .get(i)
+                                .map(|a| f32::from_bits(a.load(Ordering::Relaxed)))
+                                .unwrap_or(1.0)
+                        })
+                        .collect();
+
+                    // 2. poi sovrascrive gli atomici con i nuovi Arc
                     self.track_volume_atomics = tracks.iter().map(|t| Arc::clone(&t.volume)).collect();
-                    self.track_volumes = vec![1.0f32; tracks.len()];
+                    // self.track_volumes = vec![1.0f32; tracks.len()];
 
                     let position_for_stream = Arc::clone(&self.playback_pos);                    
                     // Creiamo lo stream usando la logica che hai già scritto
@@ -186,12 +252,62 @@ impl eframe::App for MyDawApp {
                 let label = format!("Rimuovi traccia {}", i + 1);
                 if ui.button(label).clicked() {
                     to_remove = Some(i); // qui salviamo ciò che vogliamo eliminare -> vedi riga 193 per eliminazione
+
+                     // ferma lo stream se sta suonando
+                    self.stream = None;
+                    self.is_playing = false;
+                    self.is_paused = false;
+                    self.playback_pos.store(0, Ordering::Relaxed);
                 }
             }
 
-            // bottoni ai generated
+            // bottoni NON ai generated (lo erano, ho cambiato tutto, non funzionavano più e li ho rifatti a mano)
             for i in 0..self.track_files.len() {
                 if i >= self.track_volumes.len() { continue; }
+
+                if ui.button("Add filter").clicked() {
+
+                    /* if let Some(paths) = self.file_dialog.take_selected_multiple() {
+                        self.track_files.extend(paths);
+                        // aggiungi un Vec<Filter> vuoto per ogni nuova traccia
+                        for _ in 0..self.track_files.len() - self.track_filters.len() {
+                            self.track_filters.push(Vec::new());
+                        }
+                        self.recalculate_playback_len();
+                    } */
+
+
+                    if let Some(filters) = self.track_filters.get_mut(i) {
+                        filters.push(Filter {
+                            filter_enabled: Arc::new(AtomicU8::new(0)),
+                            filter_cutoff: Arc::new(AtomicU32::new(200.0f32.to_bits())),
+                            filter: Arc::new(Mutex::new(None)),
+                        });
+                    }
+                }
+
+                /* // Il bottone precedente l'avevo creato così, ma il metodo precedente fatto dall'AI è più efficiente
+                if ui.button("Add filter").clicked() {
+                    self.track_filters
+                        .get_mut(i) // IMPORTANTE get_mut e non get, altrimenti sarebbe impossibile pushare a filters
+                        .map(move |filters| {
+                            let enabled = Arc::<AtomicU8>::new(0.into());
+                            let cutoff = Arc::<AtomicU32>::new(200.into());
+                            /* let new_node: Option<Box<dyn AudioUnit + Send>> = match enabled {
+                                1 => Some(Box::new(lowpass_hz(cutoff, 0.7))),
+                                2 => Some(Box::new(highpass_hz(cutoff, 0.7))),
+                                3 => Some(Box::new(bandpass_hz(cutoff, 0.7))),
+                                4 => Some(Box::new(notch_hz(cutoff, 0.7))),
+                                _ => None,
+                            }; */
+                            let filtro = Filter {
+                                filter_enabled: enabled,
+                                filter_cutoff: Arc::clone(&cutoff),
+                                filter: Arc::new(Mutex::new(None)),
+                            };
+                            filters.push(filtro);
+                        });
+                }*/
 
                 // slider volume esistente
                 let mut v = self.track_volumes[i];
@@ -200,21 +316,53 @@ impl eframe::App for MyDawApp {
                     self.track_volume_atomics[i].store(v.to_bits(), Ordering::Relaxed);
                 }
 
-                // toggle filtro
-                let mut enabled = self.track_filter_enabled[i].load(Ordering::Relaxed);
-                if ui.checkbox(&mut enabled, "Lowpass").changed() {
-                    self.track_filter_enabled[i].store(enabled, Ordering::Relaxed);
-                }
+                self.track_filters
+                    .get(i)
+                    .map(|a| {
+                        for filter in a {
+                            
+                            let current_filter = filter.filter_enabled.load(Ordering::Relaxed);
+                            
+                            for (label, value) in [("Lowpass", 1u8), ("Highpass", 2), ("Bandpass", 3), ("Notch", 4)] {
+                                // if i >= filter.filter_enabled { continue; }
 
-                // slider cutoff
-                if enabled {
-                    let mut cutoff = f32::from_bits(self.track_filter_cutoff[i].load(Ordering::Relaxed));
-                    if ui.add(egui::Slider::new(&mut cutoff, 200.0..=8000.0).text("Cutoff Hz")).changed() {
-                        self.track_filter_cutoff[i].store(cutoff.to_bits(), Ordering::Relaxed);
-                        // ricrea il filtro con il nuovo cutoff
-                        *self.track_filter[i].lock().unwrap() = Box::new(lowpass_hz(cutoff, 0.7));
-                    }
-                }
+                                let mut selected = current_filter == value;
+                                if ui.checkbox(&mut selected, label).changed() {
+                                    if selected {
+                                        // attiva questo filtro e ricrea il nodo fundsp
+                                        filter.filter_enabled.store(value, Ordering::Relaxed);
+                                        let cutoff = f32::from_bits(filter.filter_cutoff.load(Ordering::Relaxed));
+                                        *filter.filter.lock().unwrap() = Some(match value {
+                                            1 => Box::new(lowpass_hz(cutoff, 0.7)),
+                                            2 => Box::new(highpass_hz(cutoff, 0.7)),
+                                            3 => Box::new(bandpass_hz(cutoff, 0.7)),
+                                            4 => Box::new(notch_hz(cutoff, 0.7)),
+                                            _ => unreachable!(),
+                                        });
+                                    } else {
+                                        eprintln!("filtro disattivato per traccia {}, current={}", i, current_filter);
+                                        // deselezioni quello attivo → nessun filtro
+                                        filter.filter_enabled.store(0, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                            // slider cutoff
+                            if current_filter != 0 {
+                                let mut cutoff = f32::from_bits(filter.filter_cutoff.load(Ordering::Relaxed));
+                                if ui.add(egui::Slider::new(&mut cutoff, 200.0..=8000.0).text("Cutoff Hz")).changed() {
+                                    filter.filter_cutoff.store(cutoff.to_bits(), Ordering::Relaxed);
+                                    *filter.filter.lock().unwrap() = Some(match current_filter {
+                                        1 => Box::new(lowpass_hz(cutoff, 0.7)),
+                                        2 => Box::new(highpass_hz(cutoff, 0.7)),
+                                        3 => Box::new(bandpass_hz(cutoff, 0.7)),
+                                        4 => Box::new(notch_hz(cutoff, 0.7)),
+                                        _ => unreachable!(),
+                                    });
+                                }
+                            }
+                        }
+                        a
+                    });                
             }
             
             // alla fine delle varie iterazioni, procediamo a eliminare ciò che ci siamo segnati
@@ -228,6 +376,9 @@ impl eframe::App for MyDawApp {
                     self.track_volumes.remove(i);
                     self.track_volume_atomics.remove(i);
                 }
+                    if i < self.track_filters.len() {  // ← aggiunto
+                        self.track_filters.remove(i);
+                    }
 
                 self.recalculate_playback_len();    // ricalcola DOPO la rimozione
             }

@@ -3,4 +3,10 @@
 3. Filtri DSP — imparare il processing del segnale
 4. Synth modulari con fundsp — picco del percorso audio
 5. Offset traccia + taglio — se vuoi un DAW più completo
-6. Sistemare get_interpolated in modo che L(i) venga inflenzato solo da L(y) e non da R(y) e viceversa (serve tenere conto dei channels)
+
+
+Fixes:
+1- Il bottone muted si resetta quando la traccia si interrompe, rimuoviamo tutti  flag muted facciamo più semplicemente in modo che il bottone forzi lo slider per il volume a 0
+2- Se aggiungiamo un filtro e selezioniamo il tipo, mentre la traccia è in riproduzione, non va. Dobbiamo stoppare e farla ripartire per applicare. Se aggiungiamo il filtro e solo dopo premiamo play, funziona (nota: per aggiungerlo, bisogna avviarlo almeno un volta prima)
+3- Aggiungere tasto rimuovi filtro
+4- Sistemare get_interpolated in modo che L(i) venga inflenzato solo da L(y) e non da R(y) e viceversa (serve tenere conto dei channels). NON URGENTE
