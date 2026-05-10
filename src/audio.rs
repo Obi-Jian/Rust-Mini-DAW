@@ -116,7 +116,7 @@ impl AudioEngine {
     pub fn lowpass_wrong(
         samples: Vec<u32>,
         size: u32,
-    ) -> Vec<u32> { 
+    ) -> Vec<u32> {
         let mut filtered: Vec<u32> = Vec::new();
         for frame in samples.windows(size as usize*2+1) { 
             let mut media = 0;

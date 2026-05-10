@@ -5,8 +5,9 @@ use eframe::egui;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
-        // Definiamo una dimensione iniziale per evitare problemi di rendering
-        viewport: egui::ViewportBuilder::default().with_inner_size([400.0, 300.0]),
+        viewport: egui::ViewportBuilder::default()
+            .with_inner_size([1080.0, 720.0])   // larghezza x altezza
+            .with_min_inner_size([400.0, 300.0]), // minimo ridimensionabile
         ..Default::default()
     };
 

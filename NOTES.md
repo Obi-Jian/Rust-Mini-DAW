@@ -10,3 +10,11 @@ Fixes:
 2- Se aggiungiamo un filtro e selezioniamo il tipo, mentre la traccia è in riproduzione, non va. Dobbiamo stoppare e farla ripartire per applicare. Se aggiungiamo il filtro e solo dopo premiamo play, funziona (nota: per aggiungerlo, bisogna avviarlo almeno un volta prima)
 3- Aggiungere tasto rimuovi filtro
 4- Sistemare get_interpolated in modo che L(i) venga inflenzato solo da L(y) e non da R(y) e viceversa (serve tenere conto dei channels). NON URGENTE
+
+
+UI FIXES:
+- sezione per selezionare tracce, cliccando si aprono tutti i bottoni di opzione, in ordine:
+    1. volume 
+    2. mute (stessa riga)
+    3. add filter
+    4. dopo aver cliccato add filter, le opzioni filtro
