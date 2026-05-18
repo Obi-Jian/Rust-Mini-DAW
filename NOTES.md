@@ -4,6 +4,12 @@
 4. Synth modulari con fundsp — picco del percorso audio
 5. Offset traccia + taglio — se vuoi un DAW più completo
 
+IDEE
+1. Registrazione output in nuova traccia
+2. Aggiunta drum machine con note al cui interno ci sta un sample
+3. Interfaccia: solo tracce/synth/drum machines presenti nel progetto + 3 bottoni per aggiungerle rispettivamente
+4. Aggiunta filters per synth
+
 
 Fixes:
 1- Il bottone muted si resetta quando la traccia si interrompe, rimuoviamo tutti  flag muted facciamo più semplicemente in modo che il bottone forzi lo slider per il volume a 0
@@ -18,3 +24,10 @@ UI FIXES:
     2. mute (stessa riga)
     3. add filter
     4. dopo aver cliccato add filter, le opzioni filtro
+
+
+FUNDSP
+Mono samples can be retrieved with get_mono and filter_mono methods. The get_mono method returns the next sample from a generator that has no inputs and one or two outputs, while the filter_mono method filters the next sample from a node that has one input and one output:
+
+let out_sample = node.get_mono();
+let out_sample = node.filter_mono(sample);

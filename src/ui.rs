@@ -1,8 +1,8 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering}};
 use egui_file_dialog::FileDialog;
-use fundsp::{prelude::{AudioUnit, bandpass_hz, highpass_hz, lowpass_hz, notch_hz}};
-use crate::audio::{AudioEngine, Filter, Track};
-use eframe::egui;
+use fundsp::{prelude::{AudioUnit, bandpass_hz, highpass_hz, lowpass_hz, notch_hz}, shared::Atomic};
+use crate::audio::{AudioEngine, DrumTrack, Filter, Note, NoteSource, Source, SynthTrack, Track};
+use eframe::egui::{self};
 use cpal::traits::StreamTrait;
 use std::path::PathBuf;
 
@@ -19,6 +19,8 @@ pub struct MyDawApp {
     playback_pos: Arc<AtomicU64>,
     playback_len: u64,
     track_filters: Vec<Vec<Filter>>,
+    synth_tracks: Vec<SynthTrack>,
+    pub drum_tracks: Vec<DrumTrack>,
 }
 
 impl MyDawApp {
@@ -35,10 +37,9 @@ impl MyDawApp {
             track_files: Vec::new(),
             playback_pos: Arc::<AtomicU64>::new(0.into()),
             playback_len: 0,
-            /* track_filter_enabled: Vec::new(),
-            track_filter_cutoff: Vec::new(),
-            track_filter: Vec::new(), */
             track_filters: Vec::new(),
+            synth_tracks: Vec::new(),
+            drum_tracks: Vec::new(),
         }
     }
     fn recalculate_playback_len(&mut self) {
@@ -92,13 +93,152 @@ impl eframe::App for MyDawApp {
                 }
                 self.recalculate_playback_len();
             }
+            
+            pub const KICK_SAMPLES: &[(&str, &str)] = &[
+                ("Kick A", "/Users/generalkenobi/LocalDocuments/Rust/Audio/Samples/BT0A0A7.WAV"),
+                ("Kick B", "/Users/generalkenobi/LocalDocuments/Rust/Audio/Samples/BT0A0D0.WAV"),
+                ("Kick C", "/Users/generalkenobi/LocalDocuments/Rust/Audio/Samples/BT0A0D3.WAV"),
+            ];
+            
+            // in update
+            if ui.button("Add kick").clicked() {
+                self.drum_tracks.push(DrumTrack {
+                    name: String::from("Kick"),
+                    selected_sample: 0,
+                    sample_data: Some(AudioEngine::load_wav(KICK_SAMPLES[0].1).samples),
+                    pattern: [false; 16],
+                    volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+                    muted: Arc::new(AtomicBool::new(false)),
+                    bpm: Arc::new(AtomicU32::new(120)),
+                    sample_pos: Arc::new(AtomicU64::new(0)),
+                });
+            }
+
+            // sempre visibile, fuori dal clicked
+            let mut drumscount = 0;
+            for drum in self.drum_tracks.iter_mut() {
+                ui.push_id(drumscount, |ui| {
+                    egui::ComboBox::from_label(&drum.name)
+                        .selected_text(KICK_SAMPLES[drum.selected_sample].0)
+                        .show_ui(ui, |ui| {
+                            for (i, (name, path)) in KICK_SAMPLES.iter().enumerate() {
+                                if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
+                                    drum.sample_data = Some(AudioEngine::load_wav(path).samples);
+                                }
+                            }
+                        });
+                    drumscount += 1;
+                });
+                
+                // griglia 16 step
+                ui.horizontal(|ui| {
+                    for step in drum.pattern.iter_mut() {
+                        let label = if *step { "■" } else { "□" };
+                        if ui.button(label).clicked() {
+                            *step = !*step;
+                        }
+                    }
+                });
+            }
+            /* if ui.button("Add kick").clicked(){
+                let mut sample_type: i32 = 0;
+                egui::ComboBox::from_label("Choose kick")
+                .selected_text(format!("Option {:?}", sample_type))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut sample_type, 1, "Option 1");
+                    ui.selectable_value(&mut sample_type, 2, "Option 2");
+                    ui.selectable_value(&mut sample_type, 3, "Option 3");
+                });
+                let path;
+                match sample_type {
+                    // Match a single value
+                    1 => path = "/Samples/BT0A0A.WAV",
+                    2 => path = "/Samples/BT0A0D0.WAV",
+                    3 => path = "/Samples/BT0A0D3.WAV",
+                    
+                    _ => path = "/Samples/BT0A0DA7.WAV",
+                }
+                let sample: WavData = AudioEngine::load_wav(path);
+            }
+            if ui.button("Add snare").clicked(){
+                let mut sample_type: i32 = 0;
+                egui::ComboBox::from_label("choose snare")
+                .selected_text(format!("Option {:?}", sample_type))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut sample_type, 1, "Option 1");
+                    ui.selectable_value(&mut sample_type, 2, "Option 2");
+                    ui.selectable_value(&mut sample_type, 3, "Option 3");
+                });
+                let path;
+                match sample_type {
+                    // Match a single value
+                    1 => path = "/Samples/BT0A0A.WAV",
+                    2 => path = "/Samples/BT0A0D0.WAV",
+                    3 => path = "/Samples/BT0A0D3.WAV",
+                    
+                    _ => path = "/Samples/BT0A0DA7.WAV",
+                }
+                let sample: WavData = AudioEngine::load_wav(path);
+            } */
+
+            // "Add synth" — sempre visibile, aggiunge una traccia
+            if ui.button("Add synth").clicked() {
+                self.synth_tracks.push(SynthTrack::new());
+            }
+            let mut to_remove = None;
+            for (i, t) in self.synth_tracks.iter().enumerate(){
+                if ui.button(format!("Remove synth {}" , i)).clicked(){
+                    to_remove = Some(i);
+                    // let track = self.synth_tracks.get(i);
+                    let idx = t.sequence_idx.load(Ordering::Relaxed) as usize;
+                     if let Some(nota) = t.sequence.get(idx) {
+                            t.sequence_idx.store(0, Ordering::Relaxed);
+                            t.position_synth.store(nota.length, Ordering::Relaxed);
+                    };   
+                }
+            }
+            if let Some(i) = to_remove {
+                    self.synth_tracks.remove(i);
+            }
+            // Per ogni synth track — sempre visibile
+            for (i, st) in self.synth_tracks.iter_mut().enumerate() {
+                ui.label(format!("Synth {}", i + 1));
+
+                // volume
+                let mut v = f32::from_bits(st.volume.load(Ordering::Relaxed));
+                if ui.add(egui::Slider::new(&mut v, 0.0..=1.0).text("Volume")).changed() {
+                    st.volume.store(v.to_bits(), Ordering::Relaxed);
+                }
+
+                // "Add note" — uno per ogni synth track, sempre visibile
+                if ui.button(format!("Add note to synth {}", i + 1)).clicked() {
+                    let beat = (self.engine.config.sample_rate as f64 * 0.5) as u64;
+                    let frequency = NoteSource::Frequency(440.0);
+                    st.sequence.push(Note { frequency: frequency, length: beat });
+                }
+
+                // slider per ogni nota
+                for note in st.sequence.iter_mut() {
+                    ui.horizontal(|ui| {
+
+                        if let NoteSource::Frequency(freq) = &mut note.frequency {
+                            ui.add(egui::Slider::new(freq, 0.0..=2000.0).text("Hz"));
+                        }
+                        let sample_rate = self.engine.config.sample_rate as f64;
+                        let mut secs = note.length as f64 / sample_rate;
+                        if ui.add(egui::Slider::new(&mut secs, 0.1..=10.0).text("sec")).changed() {
+                            note.length = (secs * sample_rate) as u64;
+                        }
+                    });
+                }
+            }
 
             ui.horizontal(|ui| {
 
                 if ui.button(if self.is_playing && !self.is_paused { "Pause" } else { "Play" }).clicked() {
-                        if self.track_files.is_empty() {
-                            return; // niente da fare
-                        }
+                    if self.track_files.is_empty() && self.synth_tracks.is_empty() && self.drum_tracks.is_empty(){
+                        return; // niente da fare
+                    }
                     if !self.is_playing && !self.is_paused{
                         // Carichiamo i file
                         let tracks: Vec<Track> = self.track_files
@@ -193,12 +333,21 @@ impl eframe::App for MyDawApp {
 
                         // 2. poi sovrascrive gli atomici con i nuovi Arc
                         self.track_volume_atomics = tracks.iter().map(|t| Arc::clone(&t.volume)).collect();
-                        // self.track_volumes = vec![1.0f32; tracks.len()];
+                        
+                        // Vettore di tracce synth
+                        let synths = self.synth_tracks.iter_mut().map(move |t| t.to_stream()).collect();
+                        
+                        let drums = self.drum_tracks.iter_mut().map(move |t| t.to_stream()).collect();
+
+                        let source = Source {
+                            tracks: tracks,
+                            synth_tracks: synths,
+                            drum_tracks: drums,
+                        };
 
                         let position_for_stream = Arc::clone(&self.playback_pos);                    
                         // Creiamo lo stream usando la logica che hai già scritto
-
-                        if let Ok(s) = self.engine.setup_stream(tracks, position_for_stream) {
+                        if let Ok(s) = self.engine.setup_stream(source, position_for_stream) {
                             use cpal::traits::StreamTrait;
                             s.play().unwrap();
                             self.stream = Some(s); // Salviamo lo stream per non farlo morire
@@ -222,6 +371,16 @@ impl eframe::App for MyDawApp {
                     }
                 }
                 if ui.button("Stop").clicked() {
+                        // problema: se stoppiamo un synth e cambiamo frequenza, la prima nota sarà come quella precedente
+                        // questo perchè nel nuovo stream se impostiamo la posizione a 0, non cambierà la nota in quanto minore della lunghezza nota
+                        // soluzione brutale: impostiamo questa posizione alla lunghezza della nota, per far scattare subito il cambio freq.
+                        for track in &self.synth_tracks {
+                            let idx = track.sequence_idx.load(Ordering::Relaxed) as usize;
+                            if let Some(nota) = track.sequence.get(idx){
+                                track.sequence_idx.store(0, Ordering::Relaxed);
+                                track.position_synth.store(nota.length, Ordering::Relaxed);
+                            };
+                        }
                         self.stream = None; // Fermiamo lo stream distruggendolo
                         self.is_playing = false;
                         self.is_paused = false;
@@ -239,7 +398,6 @@ impl eframe::App for MyDawApp {
             }
             
             ui.horizontal(|ui| {
-
                 // bottoni per applicare un filtro a una traccia specifica
                 for (i, muted) in self.track_muted.iter().enumerate() {
                     let is_muted = muted.load(Ordering::Relaxed);
@@ -286,22 +444,12 @@ impl eframe::App for MyDawApp {
                 }
 
             });
-            
 
             // bottoni NON ai generated (lo erano, ho cambiato tutto, non funzionavano più e li ho rifatti a mano)
             for i in 0..self.track_files.len() {
                 if i >= self.track_volumes.len() { continue; }
 
                 if ui.button("Add filter").clicked() {
-
-                    /* if let Some(paths) = self.file_dialog.take_selected_multiple() {
-                        self.track_files.extend(paths);
-                        // aggiungi un Vec<Filter> vuoto per ogni nuova traccia
-                        for _ in 0..self.track_files.len() - self.track_filters.len() {
-                            self.track_filters.push(Vec::new());
-                        }
-                        self.recalculate_playback_len();
-                    } */
 
 
                     if let Some(filters) = self.track_filters.get_mut(i) {
