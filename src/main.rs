@@ -1,4 +1,4 @@
-mod audio;
+mod tiny_daw;
 mod ui;
 use ui::MyDawApp;
 use eframe::egui;

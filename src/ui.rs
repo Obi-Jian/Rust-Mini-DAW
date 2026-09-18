@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering}};
 use egui_file_dialog::FileDialog;
-use fundsp::{prelude::{AudioUnit, bandpass_hz, highpass_hz, lowpass_hz, notch_hz}, shared::Atomic};
-use crate::audio::{AudioEngine, DrumTrack, Filter, Note, NoteSource, Source, SynthTrack, Track};
+use fundsp::{prelude::{AudioUnit, bandpass_hz, highpass_hz, lowpass_hz, notch_hz}, prelude32::{sine_hz, square_hz, triangle_hz}};
+use crate::tiny_daw::{AudioEngine, DrumTrack, Filter, Note, Source, SynthTrack, Track};
 use eframe::egui::{self};
 use cpal::traits::StreamTrait;
 use std::path::PathBuf;
@@ -20,7 +20,8 @@ pub struct MyDawApp {
     playback_len: u64,
     track_filters: Vec<Vec<Filter>>,
     synth_tracks: Vec<SynthTrack>,
-    pub drum_tracks: Vec<DrumTrack>,
+    drum_tracks: Vec<DrumTrack>,
+    bpm: f32,
 }
 
 impl MyDawApp {
@@ -40,19 +41,20 @@ impl MyDawApp {
             track_filters: Vec::new(),
             synth_tracks: Vec::new(),
             drum_tracks: Vec::new(),
+            bpm: 120.0,
         }
     }
     fn recalculate_playback_len(&mut self) {
-    let device_rate = self.engine.config.sample_rate as f64;
-    self.playback_len = self.track_files.iter()
-        .map(|path| {
-            let data = AudioEngine::load_wav(path.to_str().unwrap());
-            let ratio = (data.spec.sample_rate as f64 / device_rate) * data.spec.channels as f64;
-            (data.samples.len() as f64 / ratio) as u64
-        })
-        .max()
-        .unwrap_or(0);
-}
+        let device_rate = self.engine.config.sample_rate as f64;
+        self.playback_len = self.track_files.iter()
+            .map(|path| {
+                let data = AudioEngine::load_wav(path.to_str().unwrap());
+                let ratio = (data.spec.sample_rate as f64 / device_rate) * data.spec.channels as f64;
+                (data.samples.len() as f64 / ratio) as u64
+            })
+            .max()
+            .unwrap_or(0);
+    }
 }
 
 impl eframe::App for MyDawApp {
@@ -95,9 +97,21 @@ impl eframe::App for MyDawApp {
             }
             
             pub const KICK_SAMPLES: &[(&str, &str)] = &[
-                ("Kick A", "/Users/generalkenobi/LocalDocuments/Rust/Audio/Samples/BT0A0A7.WAV"),
-                ("Kick B", "/Users/generalkenobi/LocalDocuments/Rust/Audio/Samples/BT0A0D0.WAV"),
-                ("Kick C", "/Users/generalkenobi/LocalDocuments/Rust/Audio/Samples/BT0A0D3.WAV"),
+                ("Kick A", "BT0A0A7.WAV"),
+                ("Kick B", "BT7A0D7.WAV"),
+                ("Kick C", "BTAA0D0.WAV"),
+            ];
+
+            pub const SNARE_SAMPLES: &[(&str, &str)] = &[
+                ("Snare A", "ST0T0S0.WAV"),
+                ("Snare B", "ST0T0S3.WAV"),
+                ("Snare C", "ST0T0S7.WAV"),
+            ];
+
+            pub const HIHAT_SAMPLES: &[(&str, &str)] = &[
+                ("Hi-hat A", "HHCD0.WAV"),
+                ("Hi-hat B", "HHCD2.WAV"),
+                ("Hi-hat C", "HHCD4.WAV"),
             ];
             
             // in update
@@ -105,8 +119,23 @@ impl eframe::App for MyDawApp {
                 self.drum_tracks.push(DrumTrack {
                     name: String::from("Kick"),
                     selected_sample: 0,
-                    sample_data: Some(AudioEngine::load_wav(KICK_SAMPLES[0].1).samples),
-                    pattern: [false; 16],
+                    sample_data: Some(AudioEngine::load_wav(&samples_path(KICK_SAMPLES[0].1)).samples),
+                    sample_rate: AudioEngine::load_wav(&samples_path(KICK_SAMPLES[0].1)).spec.sample_rate,
+                    pattern: [false; 32],
+                    volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+                    muted: Arc::new(AtomicBool::new(false)),
+                    bpm: Arc::new(AtomicU32::new(self.bpm as u32)),
+                    sample_pos: Arc::new(AtomicU64::new(0)),
+                });
+            }
+
+            if ui.button("Add snare").clicked() {
+                self.drum_tracks.push(DrumTrack {
+                    name: String::from("Snare"),
+                    selected_sample: 0,
+                    sample_data: Some(AudioEngine::load_wav(&samples_path(SNARE_SAMPLES[0].1)).samples),
+                    sample_rate: AudioEngine::load_wav(&samples_path(SNARE_SAMPLES[0].1)).spec.sample_rate,
+                    pattern: [false; 32],
                     volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                     muted: Arc::new(AtomicBool::new(false)),
                     bpm: Arc::new(AtomicU32::new(120)),
@@ -114,19 +143,95 @@ impl eframe::App for MyDawApp {
                 });
             }
 
+            if ui.button("Add hi-hat").clicked() {
+                self.drum_tracks.push(DrumTrack {
+                    name: String::from("Hi-hat"),
+                    selected_sample: 0,
+                    sample_data: Some(AudioEngine::load_wav(&samples_path(HIHAT_SAMPLES[0].1)).samples),
+                    sample_rate: AudioEngine::load_wav(&samples_path(HIHAT_SAMPLES[0].1)).spec.sample_rate,
+                    pattern: [false; 32],
+                    volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
+                    muted: Arc::new(AtomicBool::new(false)),
+                    bpm: Arc::new(AtomicU32::new(120)),
+                    sample_pos: Arc::new(AtomicU64::new(0)),
+                });
+            }
+            
+            if ui.add(egui::DragValue::new(&mut self.bpm).speed(0.1)).changed {
+                for drum_track in &mut self.drum_tracks {
+                    drum_track.bpm=Arc::new(AtomicU32::new(self.bpm as u32));
+                }
+            };
+
+
+            let mut drums_to_remove = None;
+            ui.horizontal(|ui| {
+                for (i, track) in self.drum_tracks.iter_mut().enumerate() {
+                    match track.name.as_str() {
+                        "Kick" => {
+                            let label = format!("Rimuovi Kick {}", i + 1);
+                            if ui.button(label).clicked() {
+                                drums_to_remove = Some(i);
+                            }
+                        },
+                        "Snare" => {
+                            let label = format!("Rimuovi Snare {}", i + 1);
+                            if ui.button(label).clicked() {
+                                drums_to_remove = Some(i);
+                            }
+                        },
+                        "Hi-hat" => {
+                            let label = format!("Rimuovi Hi-hat {}", i + 1);
+                            if ui.button(label).clicked() {
+                                drums_to_remove = Some(i);
+                            }
+                        },
+                        _ => continue,
+                    }
+                }
+            });
+            if let Some(i) = drums_to_remove {
+                    self.drum_tracks.remove(i);
+            }
+
             // sempre visibile, fuori dal clicked
             let mut drumscount = 0;
             for drum in self.drum_tracks.iter_mut() {
                 ui.push_id(drumscount, |ui| {
-                    egui::ComboBox::from_label(&drum.name)
-                        .selected_text(KICK_SAMPLES[drum.selected_sample].0)
-                        .show_ui(ui, |ui| {
-                            for (i, (name, path)) in KICK_SAMPLES.iter().enumerate() {
-                                if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
-                                    drum.sample_data = Some(AudioEngine::load_wav(path).samples);
+                    if drum.name == "Kick" {
+                        egui::ComboBox::from_label(&drum.name)
+                            .selected_text(KICK_SAMPLES[drum.selected_sample].0)
+                            .show_ui(ui, |ui| {
+                                // elenchiamo tutti i kick possibili
+                                for (i, (name, path)) in KICK_SAMPLES.iter().enumerate() {
+                                    if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
+                                        drum.sample_data = Some(AudioEngine::load_wav(&samples_path(path)).samples);
+                                    }
                                 }
-                            }
-                        });
+                            });
+                    }
+                    else if drum.name == "Snare" {
+                        egui::ComboBox::from_label(&drum.name)
+                            .selected_text(SNARE_SAMPLES[drum.selected_sample].0)
+                            .show_ui(ui, |ui| {
+                                for (i, (name, path)) in SNARE_SAMPLES.iter().enumerate() {
+                                    if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
+                                        drum.sample_data = Some(AudioEngine::load_wav(&samples_path(path)).samples);
+                                    }
+                                }
+                            });
+                    }
+                    else if drum.name == "Hi-hat" {
+                        egui::ComboBox::from_label(&drum.name)
+                            .selected_text(HIHAT_SAMPLES[drum.selected_sample].0)
+                            .show_ui(ui, |ui| {
+                                for (i, (name, path)) in HIHAT_SAMPLES.iter().enumerate() {
+                                    if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
+                                        drum.sample_data = Some(AudioEngine::load_wav(&samples_path(path)).samples);
+                                    }
+                                }
+                            });
+                    }
                     drumscount += 1;
                 });
                 
@@ -152,11 +257,11 @@ impl eframe::App for MyDawApp {
                 let path;
                 match sample_type {
                     // Match a single value
-                    1 => path = "/Samples/BT0A0A.WAV",
-                    2 => path = "/Samples/BT0A0D0.WAV",
-                    3 => path = "/Samples/BT0A0D3.WAV",
+                    1 => path = BT0A0A.WAV",
+                    2 => path = BT0A0D0.WAV",
+                    3 => path = BT0A0D3.WAV",
                     
-                    _ => path = "/Samples/BT0A0DA7.WAV",
+                    _ => path = BT0A0DA7.WAV",
                 }
                 let sample: WavData = AudioEngine::load_wav(path);
             }
@@ -172,11 +277,11 @@ impl eframe::App for MyDawApp {
                 let path;
                 match sample_type {
                     // Match a single value
-                    1 => path = "/Samples/BT0A0A.WAV",
-                    2 => path = "/Samples/BT0A0D0.WAV",
-                    3 => path = "/Samples/BT0A0D3.WAV",
+                    1 => path = BT0A0A.WAV",
+                    2 => path = BT0A0D0.WAV",
+                    3 => path = BT0A0D3.WAV",
                     
-                    _ => path = "/Samples/BT0A0DA7.WAV",
+                    _ => path = BT0A0DA7.WAV",
                 }
                 let sample: WavData = AudioEngine::load_wav(path);
             } */
@@ -185,10 +290,10 @@ impl eframe::App for MyDawApp {
             if ui.button("Add synth").clicked() {
                 self.synth_tracks.push(SynthTrack::new());
             }
-            let mut to_remove = None;
+            let mut synth_to_remove = None;
             for (i, t) in self.synth_tracks.iter().enumerate(){
                 if ui.button(format!("Remove synth {}" , i)).clicked(){
-                    to_remove = Some(i);
+                    synth_to_remove = Some(i);
                     // let track = self.synth_tracks.get(i);
                     let idx = t.sequence_idx.load(Ordering::Relaxed) as usize;
                      if let Some(nota) = t.sequence.get(idx) {
@@ -197,9 +302,15 @@ impl eframe::App for MyDawApp {
                     };   
                 }
             }
-            if let Some(i) = to_remove {
+            if let Some(i) = synth_to_remove {
                     self.synth_tracks.remove(i);
             }
+
+            pub const WAVETYPES: &[(u8, &str)] = &[
+                (0, "Sin"),
+                (1, "Square"),
+                (2, "Triangle"),
+            ];
             // Per ogni synth track — sempre visibile
             for (i, st) in self.synth_tracks.iter_mut().enumerate() {
                 ui.label(format!("Synth {}", i + 1));
@@ -213,7 +324,7 @@ impl eframe::App for MyDawApp {
                 // "Add note" — uno per ogni synth track, sempre visibile
                 if ui.button(format!("Add note to synth {}", i + 1)).clicked() {
                     let beat = (self.engine.config.sample_rate as f64 * 0.5) as u64;
-                    let frequency = NoteSource::Frequency(440.0);
+                    let frequency = 440.0;
                     st.sequence.push(Note { frequency: frequency, length: beat });
                 }
 
@@ -221,9 +332,10 @@ impl eframe::App for MyDawApp {
                 for note in st.sequence.iter_mut() {
                     ui.horizontal(|ui| {
 
-                        if let NoteSource::Frequency(freq) = &mut note.frequency {
+                        ui.add(egui::Slider::new(&mut note.frequency, 0.0..=2000.0).text("Hz"));
+                        /* if let NoteSource::Frequency(freq) = &mut note.frequency {
                             ui.add(egui::Slider::new(freq, 0.0..=2000.0).text("Hz"));
-                        }
+                        } */
                         let sample_rate = self.engine.config.sample_rate as f64;
                         let mut secs = note.length as f64 / sample_rate;
                         if ui.add(egui::Slider::new(&mut secs, 0.1..=10.0).text("sec")).changed() {
@@ -231,8 +343,41 @@ impl eframe::App for MyDawApp {
                         }
                     });
                 }
-            }
 
+                /* egui::ComboBox::from_label(&drum.name)
+                            .selected_text(KICK_SAMPLES[drum.selected_sample].0)
+                            .show_ui(ui, |ui| {
+                                for (i, (name, path)) in KICK_SAMPLES.iter().enumerate() {
+                                    if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
+                                        drum.sample_data = Some(AudioEngine::load_wav(path).samples);
+                                    }
+                                }
+                            }); */
+                let mut synth_index = st.wave_type.load(Ordering::Relaxed) as usize;
+                ui.push_id(i, |ui| {
+                    egui::ComboBox::from_label("Wave Type")
+                        .selected_text(WAVETYPES[synth_index].1)
+                        
+                        .show_ui(ui, |ui| {
+                            for (value, wavename) in WAVETYPES.iter() {
+                                                //ui.push_id(drumscount, |ui| {
+                                if ui.selectable_value(&mut synth_index, (*value).into(), *wavename ).changed {
+                                    st.wave_type.store(*value as u8, Ordering::Relaxed);
+                                    let freq = st.sequence
+                                        .get(st.sequence_idx.load(Ordering::Relaxed) as usize)
+                                        .and_then(|n| Some(n.frequency))
+                                        .unwrap_or(440.0);
+                                    *st.node.lock().unwrap() = match value {
+                                        0 => Box::new(sine_hz(freq)),
+                                        1 => Box::new(square_hz(freq)),
+                                        2 => Box::new(triangle_hz(freq)),
+                                        _ => Box::new(sine_hz(freq)),
+                                    };
+                                }
+                            }
+                        });
+                });
+        }
             ui.horizontal(|ui| {
 
                 if ui.button(if self.is_playing && !self.is_paused { "Pause" } else { "Play" }).clicked() {
@@ -387,7 +532,7 @@ impl eframe::App for MyDawApp {
                         self.playback_pos.store(0 as u64, Ordering::Relaxed);
                 }
             });
-            if self.playback_len > 0 {
+            if self.playback_len > 0  && self.drum_tracks.is_empty() {
                 let current = self.playback_pos.load(Ordering::Relaxed); // * 10;
                 if current >= self.playback_len {
                     self.stream = None;
@@ -557,13 +702,20 @@ impl eframe::App for MyDawApp {
             let current_secs = current as f64 / device_rate;
             let total_secs = self.playback_len as f64 / device_rate;
 
-            ui.add(
+            if !self.track_files.is_empty() {
+                ui.add(
                 egui::ProgressBar::new(progress)
                     .text(format!("{:.1} / {:.1} sec", current_secs, total_secs))
-            );        
+                );  
+            }      
             if self.is_playing && !self.is_paused {
                 ctx.request_repaint_after(std::time::Duration::from_millis(16)); // ~60fps
             }
         });
     }
+}
+
+// funzione per le path relative
+pub fn samples_path(filename: &str) -> String {
+    format!("{}/Samples/{}", env!("CARGO_MANIFEST_DIR"), filename)
 }

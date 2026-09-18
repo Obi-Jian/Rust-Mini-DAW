@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Sample, SampleFormat};
 use fundsp::prelude::AudioUnit;
-use fundsp::prelude32::{dc, sine_hz};
+use fundsp::prelude32::{dc, sine_hz, square_hz, triangle_hz};
 use hound;
 
 pub struct WavData {
@@ -30,7 +30,7 @@ pub struct SynthTrack {
     pub volume: Arc<AtomicU32>,
     // Penserò dopo ai filtri
     // pub filters: Vec<Filter>,
-    // pub wave_type: Arc<Mutex<WaveType>>,
+    pub wave_type: Arc<AtomicU8>,
     pub node: Arc<Mutex<Box<dyn AudioUnit + Send>>>,
     pub sequence: Vec<Note>,
     pub position_synth: Arc<AtomicU64>,
@@ -46,6 +46,7 @@ impl SynthTrack {
             // wave_type: Arc::new(Mutex::new(WaveType::Sine)),
             node: Arc::new(Mutex::new(Box::new(sine_hz(0.0)))),
             sequence: Vec::new(),
+            wave_type: Arc::new(AtomicU8::new(0)),
             position_synth: Arc::new(AtomicU64::new(0)),
             sequence_idx: Arc::new(AtomicU32::new(0)),
         }
@@ -57,6 +58,7 @@ impl SynthTrack {
             volume: Arc::clone(&self.volume),
             node: Arc::clone(&self.node),
             sequence: self.sequence.clone(),
+            wave_type: Arc::clone(&self.wave_type),
             position_synth: Arc::clone(&self.position_synth),
             sequence_idx: Arc::clone(&self.sequence_idx),
         }
@@ -67,7 +69,8 @@ pub struct DrumTrack {
     pub name: String,                    // "Kick", "Snare", "Hat"
     pub selected_sample: usize,          // indice nel catalogo
     pub sample_data: Option<Vec<f32>>,   // wav caricato
-    pub pattern: [bool; 16],             // griglia 16 step
+    pub sample_rate: u32,
+    pub pattern: [bool; 32],             // griglia 16 step
     pub muted: Arc<AtomicBool>,
     pub volume: Arc<AtomicU32>,
     pub bpm: Arc<AtomicU32>,
@@ -80,9 +83,10 @@ impl DrumTrack {
             name: self.name.clone(),
             muted: Arc::clone(&self.muted),
             volume: Arc::clone(&self.volume),
+            pattern: self.pattern,
+            sample_rate: self.sample_rate,
             selected_sample: 0,
             sample_data: self.sample_data.clone(),
-            pattern: self.pattern,
             bpm: Arc::clone(&self.bpm),
             sample_pos: Arc::clone(&self.sample_pos),
         }
@@ -94,16 +98,16 @@ impl DrumTrack {
 // possibilmente bloccando la UI
 #[derive(Clone)]
 pub struct Note {
-    pub frequency: NoteSource,
+    pub frequency: f32,
     pub length: u64, // l'input è in secondi ma verrà convertito dal frontend in frames
 }
 
 
-#[derive(Clone)]
+/* #[derive(Clone)]
 pub enum NoteSource {
     Frequency(f32),
-    Sample(Vec<f32>),
-}
+    // Sample(Vec<f32>),
+} */
 
 pub struct Source {
     pub tracks: Vec<Track>,
@@ -111,11 +115,11 @@ pub struct Source {
     pub drum_tracks: Vec<DrumTrack>,
 }
 
-pub enum WaveType {
+/* pub enum WaveType {
     Sine,
     Triangle,
     Square,
-}
+} */
 
 // #[derive(Clone, Copy, PartialEq)]
 /* pub enum FilterType {
@@ -207,6 +211,7 @@ impl AudioEngine {
     }
 
     // questi sono filtri esempio per comprenderli meglio, quelli effettivi sono gestiti da fundsp
+    /*
     pub fn lowpass_wrong(
         samples: Vec<u32>,
         size: u32,
@@ -241,6 +246,7 @@ impl AudioEngine {
         }
         filtered
     }
+    */
 
     // Funzione privata helper per gestire i generici
     fn create_stream<T>(
@@ -319,13 +325,32 @@ impl AudioEngine {
                             st.position_synth.store(1, Ordering::Relaxed); // 1 perchè lo 0 lo abbiamo appena usato
                             let mut node = st.node.lock().unwrap();
                             let next_note = &st.sequence[index as usize];
-
-
-                            *node = match &next_note.frequency {
-                                NoteSource::Frequency(freq) if *freq == 0.0 => Box::new(dc(0.0)),
-                                NoteSource::Frequency(freq) => Box::new(sine_hz(*freq)),
-                                NoteSource::Sample(_) => Box::new(dc(0.0)), // placeholder per ora
+                            *node = if next_note.frequency == 0.0 {
+                                Box::new(dc(0.0))
+                            } else {
+                                let freq = next_note.frequency;
+                                match st.wave_type.load(Ordering::Relaxed) {
+                                        0 => Box::new(sine_hz(freq)),
+                                        1 => Box::new(square_hz(freq)),
+                                        2 => Box::new(triangle_hz(freq)),
+                                        _ => Box::new(sine_hz(freq)),
+                                }
                             };
+
+                            /* *node = match &next_note.frequency {
+                                NoteSource::Frequency(freq) if *freq == 0.0 => Box::new(dc(0.0)),
+                                NoteSource::Frequency(freq) => {
+                                    let wt = st.wave_type.load(Ordering::Relaxed);
+                                    match wt {
+                                        0 => Box::new(sine_hz(*freq)),
+                                        1 => Box::new(square_hz(*freq)),
+                                        2 => Box::new(triangle_hz(*freq)),
+                                        _ => Box::new(sine_hz(*freq)),
+                                    }
+                                }
+                                    // Box::new(sine_hz(*freq))},
+                                // NoteSource::Sample(_) => Box::new(dc(0.0)), // placeholder per ora
+                            }; */
                             /* *node = if next_note.frequency == 0.0 {
                                 Box::new(dc(0.0)) // silenzio
                             } else {
@@ -334,6 +359,48 @@ impl AudioEngine {
                             println!("{}", next_note.frequency); */
                         } else { st.position_synth.store((posizione + 1) as u64, Ordering::Relaxed); }
                     }
+
+                    let drum_sum: f32 = drum_tracks.iter().map(|drum| {
+                            if drum.muted.load(Ordering::Relaxed) { return 0.0; }
+
+                            let frames_per_step = (sample_rate as f64 / (drum.bpm.load(Ordering::Relaxed) as f64 / 60.0 * 4.0)) as u64;
+                            let current_step = (global_frame / frames_per_step) % 32;
+                            // let step_start = current_step * frames_per_step;
+
+                            let frame_within_step = global_frame % frames_per_step; // posizione dentro lo step corrente
+
+                            // all'inizio di ogni step (non solo il primo)
+                            if frame_within_step == 0 && drum.pattern[current_step as usize] {
+                                drum.sample_pos.store(0, Ordering::Relaxed);
+                            }
+
+                            // siamo esattamente all'inizio di uno step attivo?
+                            /* if global_frame == step_start && drum.pattern[current_step as usize] {
+                                drum.sample_pos.store(0, Ordering::Relaxed);
+                            } */
+
+                            let pos = drum.sample_pos.load(Ordering::Relaxed);
+                            /* if let Some(samples) = &drum.sample_data {
+                                if pos < samples.len() as u64 {
+                                    let s = samples[pos as usize];
+                                    drum.sample_pos.store(pos + 1, Ordering::Relaxed);
+                                    let v = f32::from_bits(drum.volume.load(Ordering::Relaxed));
+                                    return s * v;
+                                } */
+                            if let Some(samples) = &drum.sample_data {
+                                // ratio tra sample rate del file e del device, come per le Track
+                                let drum_ratio = drum.sample_rate as f64 / sample_rate;
+                                let real_pos = pos as f64 * drum_ratio;  // posizione reale nel buffer del file
+                                
+                                if (real_pos as usize) < samples.len() {
+                                    let s = get_interpolated(samples, real_pos);
+                                    drum.sample_pos.store(pos + 1, Ordering::Relaxed);
+                                    let v = f32::from_bits(drum.volume.load(Ordering::Relaxed));
+                                    return s * v;
+                                }
+                            }
+                            0.0
+                    }).sum();
 
                     for (ch, output) in frame.iter_mut().enumerate() {
                         // per ogni canale del device, leggiamo il canale corrispondente
@@ -379,30 +446,6 @@ impl AudioEngine {
                             })
                             .collect();
 
-                        let drum_sum: f32 = drum_tracks.iter().map(|drum| {
-                            if drum.muted.load(Ordering::Relaxed) { return 0.0; }
-
-                            let frames_per_step = (sample_rate as f64 / (drum.bpm.load(Ordering::Relaxed) as f64 / 60.0 * 4.0)) as u64;
-                            let current_step = (global_frame / frames_per_step) % 16;
-                            let step_start = current_step * frames_per_step;
-
-                            // siamo esattamente all'inizio di uno step attivo?
-                            if global_frame == step_start && drum.pattern[current_step as usize] {
-                                drum.sample_pos.store(0, Ordering::Relaxed);
-                            }
-
-                            let pos = drum.sample_pos.load(Ordering::Relaxed);
-                            if let Some(samples) = &drum.sample_data {
-                                if pos < samples.len() as u64 {
-                                    let s = samples[pos as usize];
-                                    drum.sample_pos.store(pos + 1, Ordering::Relaxed);
-                                    let v = f32::from_bits(drum.volume.load(Ordering::Relaxed));
-                                    return s * v;
-                                }
-                            }
-                            0.0
-                        }).sum();
-
                         // somma è un vettore che contiene con un sample per traccia
                         // let somma : f32 = val.iter().sum();
                         // let divisore = 1.0 / tracks.len() as f32; // questo era solo per le tracks
@@ -420,8 +463,15 @@ impl AudioEngine {
                             out[0] * v
                         }).sum();
 
-                        let total = tracks.len() + synth_tracks.len() + drum_tracks.len() ;
-                        *output = T::from_sample((wav_sum + synth_sum + drum_sum) / total as f32);
+                        /* let total = tracks.len() + synth_tracks.len() + drum_tracks.len();
+                        *output = T::from_sample((wav_sum + synth_sum + drum_sum) / total as f32); */
+
+                        // somma diretta senza divisione, perchè se abbiamo solo 1 tipo di traccia divide x3 senza motivo, abbassando il volume
+                        let mixed = wav_sum + synth_sum + drum_sum;
+
+                        // clamp per evitare distorsione oltre ±1.0
+                        let clamped = mixed.clamp(-1.0, 1.0);
+                        *output = T::from_sample(clamped);
 
                         // *output = T::from_sample(somma * divisore);
                     

@@ -6,9 +6,16 @@
 
 IDEE
 1. Registrazione output in nuova traccia
-2. Aggiunta drum machine con note al cui interno ci sta un sample
-3. Interfaccia: solo tracce/synth/drum machines presenti nel progetto + 3 bottoni per aggiungerle rispettivamente
-4. Aggiunta filters per synth
+2. Aggiunta di tutti i sample kick/snare/hat
+3. Bottone rimozione drumtracks
+4. Modifica tipo di frequenza in synthtracks (triangolo/quadrato)
+5. Possibilità di modificare frequenza mentre è in riproduzione
+6. Slider per modifica BPM IMPORTANTE
+7. Movimento tracce sopra/sotto, destra/sinistra in una griglia
+8. Interfaccia: solo tracce/synth/drum machines presenti nel progetto + 3 bottoni per aggiungerle rispettivamente
+9. Aggiunta filters per synth
+10. Restyling UI
+11. Aggiunta Dancing Strings
 
 
 Fixes:
