@@ -5,12 +5,7 @@
 5. Offset traccia + taglio — se vuoi un DAW più completo
 
 IDEE
-- Registrazione output in nuova traccia
-- Aggiunta di tutti i sample kick/snare/hat
 - Possibilità di modificare frequenza mentre è in riproduzione
-- Movimento tracce sopra/sotto, destra/sinistra in una griglia HARD
-- Interfaccia: solo tracce/synth/drum machines presenti nel progetto + 3 bottoni per aggiungerle rispettivamente
-- Aggiunta filters per synth NON IMPORTANTE
 - Integrazione con synth HARD
 - Aggiunta Dancing Strings
 

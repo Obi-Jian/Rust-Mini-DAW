@@ -1,1 +1,8 @@
 /target
+NOTES.md
+gong.wav
+handel.wav
+laughter.wav
+Samples/*.wav
+Samples/*.WAV
+.DS_store

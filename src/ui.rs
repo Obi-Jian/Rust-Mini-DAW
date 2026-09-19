@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +28,12 @@ fn create_filter_node(filter_type: u8, cutoff: f32) -> Option<Box<dyn AudioUnit 
 }
 
 pub struct MyDawApp {
+    kick_samples: Vec<(String, PathBuf)>,   // (nome display, path)
+    snare_samples: Vec<(String, PathBuf)>,
+    hihat_samples: Vec<(String, PathBuf)>,
+    file_dialog_kick: FileDialog,
+    file_dialog_snare: FileDialog,
+    file_dialog_hihat: FileDialog,
     engine: AudioEngine,
     stream: Option<cpal::Stream>,
     is_playing: bool,
@@ -34,6 +41,7 @@ pub struct MyDawApp {
     lanes: Vec<Vec<WavClip>>,
     next_clip_id: u64,
     file_dialog: FileDialog,
+    //file_dialog_drums: FileDialog,
     playback_pos: Arc<AtomicU64>,
     playback_len: u64,
     synth_tracks: Vec<SynthTrack>,
@@ -45,6 +53,12 @@ pub struct MyDawApp {
 impl MyDawApp {
     pub fn new() -> Self {
         Self {
+            kick_samples: Vec::new(),
+            snare_samples: Vec::new(),
+            hihat_samples: Vec::new(),
+            file_dialog_kick: FileDialog::new(),
+            file_dialog_snare: FileDialog::new(),
+            file_dialog_hihat: FileDialog::new(),
             engine: AudioEngine::new(),
             stream: None,
             is_playing: false,
@@ -52,6 +66,7 @@ impl MyDawApp {
             lanes: vec![Vec::new()], // Inizia con una corsia vuota (Corsia 1)
             next_clip_id: 1,
             file_dialog: FileDialog::new(),
+            //file_dialog_drums: FileDialog::new(),
             playback_pos: Arc::<AtomicU64>::new(0.into()),
             playback_len: 0,
             synth_tracks: Vec::new(),
@@ -93,7 +108,7 @@ impl eframe::App for MyDawApp {
 
                 if ui.button(play_text).clicked() {
                     if !self.has_audio_content() {
-                        return; // niente da fare
+                        return;
                     }
 
                     if !self.is_playing && !self.is_paused {
@@ -230,7 +245,7 @@ impl eframe::App for MyDawApp {
                     self.file_dialog.select_multiple();
                 }
 
-                if ui.button("➕ Nuova corsia").clicked() {
+                if ui.button("+ Nuova corsia").clicked() {
                     self.lanes.push(Vec::new());
                     self.selected_lane = self.lanes.len() - 1;
                 }
@@ -310,7 +325,7 @@ impl eframe::App for MyDawApp {
 
                 ui.group(|ui| {
                     ui.horizontal(|ui| {
-                        ui.strong(format!("🎵 Corsia {}", lane_idx + 1));
+                        ui.strong(format!("Corsia {}", lane_idx + 1));
                         ui.label(format!(
                             "({} clip in sequenza | Durata totale: {:.2}s)",
                             lane.len(),
@@ -476,8 +491,8 @@ impl eframe::App for MyDawApp {
                                                         ui.separator();
 
                                                         // Filtri per traccia
-                                                        ui.collapsing("🎛 Filtri", |ui| {
-                                                            if ui.button("➕ Aggiungi filtro").clicked()
+                                                        ui.collapsing("Filtri", |ui| {
+                                                            if ui.button("+ Aggiungi filtro").clicked()
                                                             {
                                                                 clip.filters.push(Filter {
                                                                     filter_enabled: Arc::new(
@@ -710,35 +725,13 @@ impl eframe::App for MyDawApp {
             // ==========================================
             ui.heading("Drum Machine");
 
-            pub const KICK_SAMPLES: &[(&str, &str)] = &[
-                ("Kick A", "BT0A0A7.WAV"),
-                ("Kick B", "BT7A0D7.WAV"),
-                ("Kick C", "BTAA0D0.WAV"),
-            ];
-
-            pub const SNARE_SAMPLES: &[(&str, &str)] = &[
-                ("Snare A", "ST0T0S0.WAV"),
-                ("Snare B", "ST0T0S3.WAV"),
-                ("Snare C", "ST0T0S7.WAV"),
-            ];
-
-            pub const HIHAT_SAMPLES: &[(&str, &str)] = &[
-                ("Hi-hat A", "HHCD0.WAV"),
-                ("Hi-hat B", "HHCD2.WAV"),
-                ("Hi-hat C", "HHCD4.WAV"),
-            ];
-
             ui.horizontal(|ui| {
                 if ui.button("Add kick").clicked() {
                     self.drum_tracks.push(DrumTrack {
                         name: String::from("Kick"),
                         selected_sample: 0,
-                        sample_data: Some(
-                            AudioEngine::load_wav(&samples_path(KICK_SAMPLES[0].1)).samples,
-                        ),
-                        sample_rate: AudioEngine::load_wav(&samples_path(KICK_SAMPLES[0].1))
-                            .spec
-                            .sample_rate,
+                        sample_data: Some(Vec::new()),
+                        sample_rate: 0,
                         pattern: [false; 32],
                         volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                         muted: Arc::new(AtomicBool::new(false)),
@@ -751,12 +744,8 @@ impl eframe::App for MyDawApp {
                     self.drum_tracks.push(DrumTrack {
                         name: String::from("Snare"),
                         selected_sample: 0,
-                        sample_data: Some(
-                            AudioEngine::load_wav(&samples_path(SNARE_SAMPLES[0].1)).samples,
-                        ),
-                        sample_rate: AudioEngine::load_wav(&samples_path(SNARE_SAMPLES[0].1))
-                            .spec
-                            .sample_rate,
+                        sample_data: Some(Vec::new()),
+                        sample_rate: 0,
                         pattern: [false; 32],
                         volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                         muted: Arc::new(AtomicBool::new(false)),
@@ -769,12 +758,8 @@ impl eframe::App for MyDawApp {
                     self.drum_tracks.push(DrumTrack {
                         name: String::from("Hi-hat"),
                         selected_sample: 0,
-                        sample_data: Some(
-                            AudioEngine::load_wav(&samples_path(HIHAT_SAMPLES[0].1)).samples,
-                        ),
-                        sample_rate: AudioEngine::load_wav(&samples_path(HIHAT_SAMPLES[0].1))
-                            .spec
-                            .sample_rate,
+                        sample_data: Some(Vec::new()),
+                        sample_rate: 0,
                         pattern: [false; 32],
                         volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                         muted: Arc::new(AtomicBool::new(false)),
@@ -824,48 +809,54 @@ impl eframe::App for MyDawApp {
             let mut drumscount = 0;
             for drum in self.drum_tracks.iter_mut() {
                 ui.push_id(drumscount, |ui| {
-                    if drum.name == "Kick" {
-                        egui::ComboBox::from_label(&drum.name)
-                            .selected_text(KICK_SAMPLES[drum.selected_sample].0)
-                            .show_ui(ui, |ui| {
-                                for (i, (name, _path)) in KICK_SAMPLES.iter().enumerate() {
-                                    if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
-                                        drum.sample_data = Some(
-                                            AudioEngine::load_wav(&samples_path(KICK_SAMPLES[i].1))
-                                                .samples,
-                                        );
+                    let (samples, dialog) = match drum.name.as_str() {
+                        "Kick"   => (&mut self.kick_samples,  &mut self.file_dialog_kick),
+                        "Snare"  => (&mut self.snare_samples, &mut self.file_dialog_snare),
+                        "Hi-hat" => (&mut self.hihat_samples, &mut self.file_dialog_hihat),
+                        _        => return,
+                    };
+
+                    ui.horizontal(|ui| {
+                        let selected_name = samples
+                            .get(drum.selected_sample)
+                            .map(|(name, _)| name.as_str())
+                            .unwrap_or("— nessuno —");
+                        if !samples.is_empty() {
+                            egui::ComboBox::from_label(&drum.name)
+                                .selected_text(selected_name)
+                                .show_ui(ui, |ui| {
+                                    for (i, (name, path)) in samples.iter().enumerate() {
+                                        // if name.is_empty() {name="- nessuno -"};
+                                        if ui.selectable_value(&mut drum.selected_sample, i, name).changed() {
+                                            drum.sample_data = Some(
+                                                AudioEngine::load_wav(path.to_str().unwrap()).samples
+                                            );
+                                            drum.sample_rate = AudioEngine::load_wav(
+                                                path.to_str().unwrap()
+                                            ).spec.sample_rate;
+                                        }
                                     }
-                                }
-                            });
-                    } else if drum.name == "Snare" {
-                        egui::ComboBox::from_label(&drum.name)
-                            .selected_text(SNARE_SAMPLES[drum.selected_sample].0)
-                            .show_ui(ui, |ui| {
-                                for (i, (name, _path)) in SNARE_SAMPLES.iter().enumerate() {
-                                    if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
-                                        drum.sample_data = Some(
-                                            AudioEngine::load_wav(&samples_path(SNARE_SAMPLES[i].1))
-                                                .samples,
-                                        );
-                                    }
-                                }
-                            });
-                    } else if drum.name == "Hi-hat" {
-                        egui::ComboBox::from_label(&drum.name)
-                            .selected_text(HIHAT_SAMPLES[drum.selected_sample].0)
-                            .show_ui(ui, |ui| {
-                                for (i, (name, _path)) in HIHAT_SAMPLES.iter().enumerate() {
-                                    if ui.selectable_value(&mut drum.selected_sample, i, *name).changed() {
-                                        drum.sample_data = Some(
-                                            AudioEngine::load_wav(&samples_path(HIHAT_SAMPLES[i].1))
-                                                .samples,
-                                        );
-                                    }
-                                }
-                            });
+                                });
+                        }
+
+                        if ui.button("Add sample +").clicked() {
+                            dialog.select_multiple();
+                        }
+                    });
+
+                    // gestisci i file scelti
+                    dialog.update(ctx);
+                    if let Some(paths) = dialog.take_selected_multiple() {
+                        for path in paths {
+                            let name = path.file_stem()
+                                .unwrap_or_default()
+                                .to_string_lossy()
+                                .to_string();
+                            samples.push((name, path));
+                        }
                     }
-                    drumscount += 1;
                 });
+                drumscount += 1;
 
                 // griglia 32 step
                 ui.horizontal(|ui| {

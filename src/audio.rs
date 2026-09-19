@@ -59,8 +59,6 @@ impl Eq for WavClip {}
 pub struct SynthTrack {
     pub muted: Arc<AtomicBool>,
     pub volume: Arc<AtomicU32>,
-    // Penserò dopo ai filtri
-    // pub filters: Vec<Filter>,
     pub wave_type: Arc<AtomicU8>,
     pub node: Arc<Mutex<Box<dyn AudioUnit + Send>>>,
     pub sequence: Vec<Note>,
@@ -73,8 +71,6 @@ impl SynthTrack {
         SynthTrack {
             muted: Arc::new(AtomicBool::new(false)),
             volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
-            // filters: Vec::new(),
-            // wave_type: Arc::new(Mutex::new(WaveType::Sine)),
             node: Arc::new(Mutex::new(Box::new(sine_hz(0.0)))),
             sequence: Vec::new(),
             wave_type: Arc::new(AtomicU8::new(0)),
@@ -133,59 +129,18 @@ pub struct Note {
     pub length: u64, // l'input è in secondi ma verrà convertito dal frontend in frames
 }
 
-
-/* #[derive(Clone)]
-pub enum NoteSource {
-    Frequency(f32),
-    // Sample(Vec<f32>),
-} */
-
 pub struct Source {
     pub tracks: Vec<Track>,
     pub synth_tracks: Vec<SynthTrack>,
     pub drum_tracks: Vec<DrumTrack>,
 }
 
-/* pub enum WaveType {
-    Sine,
-    Triangle,
-    Square,
-} */
-
-// #[derive(Clone, Copy, PartialEq)]
-/* pub enum FilterType {
-    None,
-    Lowpass,
-    Highpass,
-    Bandpass,
-    Notch,
-}
-
-impl FilterType {
-    pub fn to_u8(self) -> u8 { self as u8 }
-    pub fn from_u8(v: u8) -> Self {
-        match v {
-            1 => FilterType::Lowpass,
-            2 => FilterType::Highpass,
-            3 => FilterType::Bandpass,
-            4 => FilterType::Notch,
-            _ => FilterType::None,
-        }
-    }
-} */
 #[derive(Clone)]
 pub struct Filter {
     pub filter_enabled: Arc<AtomicU8>,
     pub filter_cutoff: Arc<AtomicU32>,   // Hz come f32 bits
     pub filter: Arc<Mutex<Option<Box<dyn AudioUnit + Send>>>>,
 }
-/* impl Track {
-    fn new(samples: WavData, muted: Arc<AtomicBool>, volume: Arc<AtomicU32>) -> Self {
-        let lowpass_enabled = Arc::<AtomicBool>::new(false.into());
-        let lowpass_size= Arc::<AtomicU32>::new(0.into());
-        Self { data: samples, muted, volume, lowpass_enabled, lowpass_size}
-    }
-} */
 
 impl AudioEngine {
     pub fn new() -> Self {
@@ -218,23 +173,16 @@ impl AudioEngine {
         WavData { samples, spec }
     }
 
-    // Questa è la tua build_stream trasformata in metodo
-    // DA MODIFICARE
     pub fn setup_stream(
         &self,
-        // tracks: Vec<Track>,
         source: Source,
         position: Arc<AtomicU64>,
 
     ) -> Result<cpal::Stream, cpal::BuildStreamError> {
-        // let tracks = Track::new( samples, muted, volume);
         let err_fn = |err| eprintln!("Errore nello stream: {}", err);
         let config = self.config.clone();
 
         match self.sample_format {
-            /* SampleFormat::F32 => self.create_stream::<f32>(&config,samples, muted, volume, position, err_fn),
-            SampleFormat::I16 => self.create_stream::<i16>(&config, samples, muted,/* samples_a, samples_b, */ volume, position, err_fn),
-            SampleFormat::U16 => self.create_stream::<u16>(&config, samples, muted,/* samples_a, samples_b, */volume , position, err_fn), */
             SampleFormat::F32 => self.create_stream::<f32>(&config, source, position, err_fn),
             SampleFormat::I16 => self.create_stream::<i16>(&config, source, position, err_fn),
             SampleFormat::U16 => self.create_stream::<u16>(&config, source, position, err_fn),
@@ -284,11 +232,7 @@ impl AudioEngine {
     fn create_stream<T>(
         &self,
         config: &cpal::StreamConfig,
-        //tracks: Vec<Track>,
         source: Source,
-        /* data: Vec<WavData>,
-        muted: Vec<Arc<AtomicBool>>,
-        volume: Vec<Arc<AtomicU32>>, */
         position: Arc<AtomicU64>,
         err_fn: impl Fn(cpal::StreamError) + Send + 'static,
     ) -> Result<cpal::Stream, cpal::BuildStreamError>
@@ -366,27 +310,6 @@ impl AudioEngine {
                                         _ => Box::new(sine_hz(freq)),
                                 }
                             };
-
-                            /* *node = match &next_note.frequency {
-                                NoteSource::Frequency(freq) if *freq == 0.0 => Box::new(dc(0.0)),
-                                NoteSource::Frequency(freq) => {
-                                    let wt = st.wave_type.load(Ordering::Relaxed);
-                                    match wt {
-                                        0 => Box::new(sine_hz(*freq)),
-                                        1 => Box::new(square_hz(*freq)),
-                                        2 => Box::new(triangle_hz(*freq)),
-                                        _ => Box::new(sine_hz(*freq)),
-                                    }
-                                }
-                                    // Box::new(sine_hz(*freq))},
-                                // NoteSource::Sample(_) => Box::new(dc(0.0)), // placeholder per ora
-                            }; */
-                            /* *node = if next_note.frequency == 0.0 {
-                                Box::new(dc(0.0)) // silenzio
-                            } else {
-                                Box::new(sine_hz(next_note.frequency))
-                            };
-                            println!("{}", next_note.frequency); */
                         } else { st.position_synth.store((posizione + 1) as u64, Ordering::Relaxed); }
                     }
 
@@ -395,7 +318,6 @@ impl AudioEngine {
 
                             let frames_per_step = (sample_rate as f64 / (drum.bpm.load(Ordering::Relaxed) as f64 / 60.0 * 4.0)) as u64;
                             let current_step = (global_frame / frames_per_step) % 32;
-                            // let step_start = current_step * frames_per_step;
 
                             let frame_within_step = global_frame % frames_per_step; // posizione dentro lo step corrente
 
@@ -404,19 +326,8 @@ impl AudioEngine {
                                 drum.sample_pos.store(0, Ordering::Relaxed);
                             }
 
-                            // siamo esattamente all'inizio di uno step attivo?
-                            /* if global_frame == step_start && drum.pattern[current_step as usize] {
-                                drum.sample_pos.store(0, Ordering::Relaxed);
-                            } */
-
                             let pos = drum.sample_pos.load(Ordering::Relaxed);
-                            /* if let Some(samples) = &drum.sample_data {
-                                if pos < samples.len() as u64 {
-                                    let s = samples[pos as usize];
-                                    drum.sample_pos.store(pos + 1, Ordering::Relaxed);
-                                    let v = f32::from_bits(drum.volume.load(Ordering::Relaxed));
-                                    return s * v;
-                                } */
+
                             if let Some(samples) = &drum.sample_data {
                                 // ratio tra sample rate del file e del device, come per le Track
                                 let drum_ratio = drum.sample_rate as f64 / sample_rate;
@@ -490,9 +401,6 @@ impl AudioEngine {
                             let v = f32::from_bits(st.volume.load(Ordering::Relaxed));
                             out[0] * v
                         }).sum();
-
-                        /* let total = tracks.len() + synth_tracks.len() + drum_tracks.len();
-                        *output = T::from_sample((wav_sum + synth_sum + drum_sum) / total as f32); */
 
                         // somma diretta senza divisione, perchè se abbiamo solo 1 tipo di traccia divide x3 senza motivo, abbassando il volume
                         let mixed = wav_sum + synth_sum + drum_sum;

@@ -12,7 +12,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "Rust Mini DAW",
         native_options,
-        // Nota: aggiungiamo Ok(...) e la closure ora accetta _cc
         Box::new(|_cc| {
             Ok(Box::new(MyDawApp::new()))
         }),
