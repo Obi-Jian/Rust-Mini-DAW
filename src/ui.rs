@@ -527,7 +527,7 @@ impl eframe::App for MyDawApp {
                                                                                 ),
                                                                                 |ui| {
                                                                                     if ui
-                                                                                        .button("✕")
+                                                                                        .button("🗑")
                                                                                         .on_hover_text(
                                                                                             "Rimuovi filtro",
                                                                                         )
@@ -962,8 +962,4 @@ impl eframe::App for MyDawApp {
             }
         });
     }
-}
-
-pub fn samples_path(filename: &str) -> String {
-    format!("{}/Samples/{}", env!("CARGO_MANIFEST_DIR"), filename)
 }

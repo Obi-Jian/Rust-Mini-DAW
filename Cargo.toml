@@ -1,5 +1,5 @@
 [package]
-name = "tiny_daw"
+name = "rust_mini_daw"
 version = "0.1.0"
 edition = "2024"
 

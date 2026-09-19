@@ -1,4 +1,4 @@
-use tiny_daw::ui::MyDawApp;
+use rust_mini_daw::ui::MyDawApp;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {

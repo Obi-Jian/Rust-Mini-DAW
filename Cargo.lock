@@ -3058,6 +3058,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rust_mini_daw"
+version = "0.1.0"
+dependencies = [
+ "cpal",
+ "eframe",
+ "egui",
+ "egui-file-dialog",
+ "egui_dnd",
+ "fundsp",
+ "hound",
+]
+
+[[package]]
 name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3739,19 +3752,6 @@ dependencies = [
  "arrayref",
  "bytemuck",
  "strict-num",
-]
-
-[[package]]
-name = "tiny_daw"
-version = "0.1.0"
-dependencies = [
- "cpal",
- "eframe",
- "egui",
- "egui-file-dialog",
- "egui_dnd",
- "fundsp",
- "hound",
 ]
 
 [[package]]

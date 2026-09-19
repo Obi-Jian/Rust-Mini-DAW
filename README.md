@@ -32,8 +32,8 @@ No additional dependencies required.
 ## Building
 
 ```bash
-git clone https://github.com/yourusername/rust-mini-daw
-cd rust-mini-daw
+git clone https://github.com/Obi-Jian/Rust-Mini-DAW.git
+cd Rust-Mini-DAW
 cargo build --release
 ```
 
@@ -51,7 +51,7 @@ Click **Add kick**, **Add snare**, or **Add hi-hat** to create drum tracks. Use 
 Click **Add synth** to create a synthesizer track. Add notes with **Add note**, then adjust frequency (Hz) and duration for each step. Select the waveform type (sine, square, triangle) from the dropdown.
 
 ### Samples
-This project does not ship with drum samples. Place your own `.wav` files using the **Add sample +** button in each drum track, or drop them in the `Samples/` folder.
+This project does not ship with drum samples. Place your own `.wav` files using the **Add sample +** button in each drum track
 
 ## Project Structure
 
