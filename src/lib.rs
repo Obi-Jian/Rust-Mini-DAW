@@ -1,2 +1,2 @@
-pub mod tiny_daw;
+pub mod audio;
 pub mod ui;

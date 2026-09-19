@@ -1,6 +1,4 @@
-mod tiny_daw;
-mod ui;
-use ui::MyDawApp;
+use tiny_daw::ui::MyDawApp;
 use eframe::egui;
 
 fn main() -> eframe::Result<()> {

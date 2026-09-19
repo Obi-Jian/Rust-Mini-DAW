@@ -1,12 +1,13 @@
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
-
+use std::path::PathBuf;
 use cpal::traits::{DeviceTrait, HostTrait};
 use cpal::{FromSample, Sample, SampleFormat};
 use fundsp::prelude::AudioUnit;
 use fundsp::prelude32::{dc, sine_hz, square_hz, triangle_hz};
 use hound;
 
+#[derive(Clone)]
 pub struct WavData {
     pub samples: Vec<f32>,
     pub spec: hound::WavSpec,
@@ -19,11 +20,41 @@ pub struct AudioEngine {
 }
 
 pub struct Track {
-    pub data: WavData,
+    pub data: Arc<WavData>,
     pub muted: Arc<AtomicBool>,
     pub volume: Arc<AtomicU32>,
     pub filters: Vec<Filter>,
+    pub start_frame: u64,
+    pub lane: usize,
 }
+
+#[derive(Clone)]
+pub struct WavClip {
+    pub id: u64,
+    pub name: String,
+    pub path: PathBuf,
+    pub data: Arc<WavData>,
+    pub muted: Arc<AtomicBool>,
+    pub volume: f32,
+    pub volume_atomic: Arc<AtomicU32>,
+    pub filters: Vec<Filter>,
+    pub duration_frames_device: u64,
+    pub duration_secs: f64,
+}
+
+impl std::hash::Hash for WavClip {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.id.hash(state);
+    }
+}
+
+impl PartialEq for WavClip {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+    }
+}
+
+impl Eq for WavClip {}
 
 pub struct SynthTrack {
     pub muted: Arc<AtomicBool>,
@@ -142,6 +173,7 @@ impl FilterType {
         }
     }
 } */
+#[derive(Clone)]
 pub struct Filter {
     pub filter_enabled: Arc<AtomicU8>,
     pub filter_cutoff: Arc<AtomicU32>,   // Hz come f32 bits
@@ -285,8 +317,6 @@ impl AudioEngine {
 
         let sample_rate = config.sample_rate as f64; // estrai il valore prima della closure
 
-        let mut pos: Vec<f64> = vec![0.0; tracks.len()];
-
         let get_interpolated = |samples: &[f32], pos: f64| -> f32 {
 
             // cosa facciamo qui?
@@ -412,37 +442,35 @@ impl AudioEngine {
                         // .zip() prende due iteratori e li "accoppia" elemento per elemento, producendo tuple
                         // [1, 2, 3].iter().zip([10, 20, 30].iter()) produce: (&1, &10), (&2, &20), (&3, &30)
                         let val: Vec<f32> = tracks.iter()
-                            //.zip(muted.iter()) // produce: (d, m)
-                            .zip(channels.iter()) // produce: ((d, m), num_ch)
-                            .zip(pos.iter()) // produe: (((d, m), num_ch), p)
-                            //.zip(volume.iter())
-                            .map(|((track, &num_ch), &p)| {
-                                // load significa che prende la variabile all'interno di track.muted (in questo caso booleano)
-                                // Ordering serve per capire chi accede prima alla risorsa (Arc è un puntatore atomico, per variabili concorrenti)
+                            .zip(channels.iter())
+                            .zip(ratio.iter())
+                            .map(|((track, &num_ch), &r)| {
                                 if track.muted.load(Ordering::Relaxed) {
-                                    0.0
-                                } else {
-                                    // ch è il canale nel frame che stiamo controllando
-                                    // num_ch è preso da channels ed è 1 (se mono) o 2 (se stereo)
-                                    // 1%1 = 0, 1%2 = 1 2%2 = 0, 2%1 = 0 (impossibile, non può essere il secondo ch se audio ha solo 1 canale)
-                                    let c = ch % num_ch;
-                                    // p all'inizio è tutto 0, poi viene aggiornato dopo ogni frame aggiornando il rateo (vedi più in basso)
-                                    let mut sample = get_interpolated(&track.data.samples, p + c as f64);
-                                    // qui modifichiamo ogni sample, in base al tipo di filtro che abbiamo impostato (da ui, sennò di default è 0)
-                                    for filt in &track.filters { 
-                                        if filt.filter_enabled.load(Ordering::Relaxed) != 0 {
-                                            // non ho capito perchè ha fatto così, io avrei usato un match, ma non andava
-                                            let mut guard = filt.filter.lock().unwrap();
-                                            if let Some(f) = guard.as_mut() {
-                                                let mut out = [0.0f32];
-                                                f.tick(&[sample], &mut out);
-                                                sample = out[0];
-                                            }
+                                    return 0.0;
+                                }
+                                if global_frame < track.start_frame {
+                                    return 0.0;
+                                }
+                                let frame_in_track = global_frame - track.start_frame;
+                                let p = frame_in_track as f64 * r;
+                                let c = ch % num_ch;
+                                let sample_pos = p + c as f64;
+                                if sample_pos >= track.data.samples.len() as f64 {
+                                    return 0.0;
+                                }
+                                let mut sample = get_interpolated(&track.data.samples, sample_pos);
+                                for filt in &track.filters { 
+                                    if filt.filter_enabled.load(Ordering::Relaxed) != 0 {
+                                        let mut guard = filt.filter.lock().unwrap();
+                                        if let Some(f) = guard.as_mut() {
+                                            let mut out = [0.0f32];
+                                            f.tick(&[sample], &mut out);
+                                            sample = out[0];
                                         }
                                     }
-                                    let v = f32::from_bits(track.volume.load(Ordering::Relaxed));
-                                    sample * v
                                 }
+                                let v = f32::from_bits(track.volume.load(Ordering::Relaxed));
+                                sample * v
                             })
                             .collect();
 
@@ -477,14 +505,6 @@ impl AudioEngine {
                     
                     }
                     
-                    // per ogni frame che il device consuma, devo avanzare di "rateo" posizioni nel vec del file
-                    // il rateo se sample rate di device e del file coincidessero, sarebbe 1 (mono) o 2 (stereo)
-                    // il codice esegue tante iterazioni quante frame_device
-                    // frame_device = durata_secondi × 44100
-                    // chiamate_callback = frame_device / numero frame file
-                    for (p, r) in pos.iter_mut().zip(ratio.iter()) {
-                        *p += r ;
-                    }
                     global_frame += 1; // aggiorna posizione attuale globale
                     position.store(global_frame, Ordering::Relaxed); // e la stora nel puntatore
 
