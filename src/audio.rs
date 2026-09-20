@@ -327,6 +327,7 @@ impl AudioEngine {
                             }
 
                             let pos = drum.sample_pos.load(Ordering::Relaxed);
+                            if pos == u64::MAX { return 0.0; }
 
                             if let Some(samples) = &drum.sample_data {
                                 // ratio tra sample rate del file e del device, come per le Track

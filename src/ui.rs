@@ -338,7 +338,7 @@ impl eframe::App for MyDawApp {
                     });
 
                     if lane.is_empty() {
-                        ui.label("Nessuna traccia in questa corsia. Carica un file o sposta qui una traccia con ▲ / ▼.");
+                        ui.label("Nessuna traccia in questa corsia. Carica un file o sposta qui una traccia con Λ / V.");
                     } else {
                         ScrollArea::horizontal()
                             .id_salt(format!("lane_scroll_{}", lane_idx))
@@ -432,7 +432,7 @@ impl eframe::App for MyDawApp {
                                                             ui.label("Corsia:");
                                                             if lane_idx > 0 {
                                                                 if ui
-                                                                    .button("▲ Su")
+                                                                    .button("Λ Su")
                                                                     .on_hover_text(
                                                                         "Sposta nella corsia sopra",
                                                                     )
@@ -446,7 +446,7 @@ impl eframe::App for MyDawApp {
                                                                 }
                                                             }
                                                             if ui
-                                                                .button("▼ Giù")
+                                                                .button("V Giù")
                                                                 .on_hover_text(
                                                                     "Sposta nella corsia sotto",
                                                                 )
@@ -736,7 +736,7 @@ impl eframe::App for MyDawApp {
                         volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                         muted: Arc::new(AtomicBool::new(false)),
                         bpm: Arc::new(AtomicU32::new(self.bpm as u32)),
-                        sample_pos: Arc::new(AtomicU64::new(0)),
+                        sample_pos: Arc::new(AtomicU64::new(u64::MAX)),
                     });
                 }
 
@@ -750,7 +750,7 @@ impl eframe::App for MyDawApp {
                         volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                         muted: Arc::new(AtomicBool::new(false)),
                         bpm: Arc::new(AtomicU32::new(120)),
-                        sample_pos: Arc::new(AtomicU64::new(0)),
+                        sample_pos: Arc::new(AtomicU64::new(u64::MAX)),
                     });
                 }
 
@@ -764,7 +764,7 @@ impl eframe::App for MyDawApp {
                         volume: Arc::new(AtomicU32::new(1.0f32.to_bits())),
                         muted: Arc::new(AtomicBool::new(false)),
                         bpm: Arc::new(AtomicU32::new(120)),
-                        sample_pos: Arc::new(AtomicU64::new(0)),
+                        sample_pos: Arc::new(AtomicU64::new(u64::MAX)),
                     });
                 }
 
@@ -852,6 +852,17 @@ impl eframe::App for MyDawApp {
                                 .unwrap_or_default()
                                 .to_string_lossy()
                                 .to_string();
+                            
+                            // carica subito i dati
+                            let wav = AudioEngine::load_wav(path.to_str().unwrap());
+                            
+                            // se è il primo sample, impostalo subito come attivo
+                            if samples.is_empty() {
+                                drum.sample_data = Some(wav.samples.clone());
+                                drum.sample_rate = wav.spec.sample_rate;
+                                drum.selected_sample = 0;
+                            }
+                            
                             samples.push((name, path));
                         }
                     }
